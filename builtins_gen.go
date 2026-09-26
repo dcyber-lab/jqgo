@@ -151,12 +151,9 @@ func (e *evaluator) emitRange(from, upto, by any, p *pathT, out emitFunc) error 
 			return fmt.Errorf("Range bounds must be numeric")
 		}
 	}
-	n := 0
 	emit := func(x any) error {
-		if n++; n&0xfff == 0 {
-			if err := e.ctx.Err(); err != nil {
-				return err
-			}
+		if err := e.tick(); err != nil {
+			return err
 		}
 		return emitValue(out, x, p)
 	}

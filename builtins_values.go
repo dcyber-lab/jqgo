@@ -151,57 +151,47 @@ func numPred(f func(float64) bool) valueFunc {
 	}
 }
 
+// contains is jq's contains: only a kind mismatch at the top level is an
+// error (true and false count as different kinds); deeper down a mismatch
+// just means "not contained".
 func contains(a, b any) (any, error) {
 	a, b = top(a), top(b)
-	if kindOrder(a) != kindOrder(b) && !(isBool(a) && isBool(b)) {
+	if kindOrder(a) != kindOrder(b) {
 		return nil, fmt.Errorf("%s and %s cannot have their containment checked", typeDump(a), typeDump(b))
+	}
+	return containsValue(a, b), nil
+}
+
+func containsValue(a, b any) bool {
+	a, b = top(a), top(b)
+	if kindOrder(a) != kindOrder(b) {
+		return false
 	}
 	switch x := a.(type) {
 	case map[string]any:
-		y := b.(map[string]any)
-		for k, bv := range y {
+		for k, bv := range b.(map[string]any) {
 			av, ok := x[k]
-			if !ok {
-				return false, nil
-			}
-			c, err := contains(av, bv)
-			if err != nil {
-				return nil, err
-			}
-			if c != true {
-				return false, nil
+			if !ok || !containsValue(av, bv) {
+				return false
 			}
 		}
-		return true, nil
+		return true
 	case []any:
-		y := b.([]any)
-		for _, bv := range y {
-			found := false
+	outer:
+		for _, bv := range b.([]any) {
 			for _, av := range x {
-				if kindOrder(av) != kindOrder(bv) {
-					continue
-				}
-				c, err := contains(av, bv)
-				if err != nil {
-					return nil, err
-				}
-				if c == true {
-					found = true
-					break
+				if containsValue(av, bv) {
+					continue outer
 				}
 			}
-			if !found {
-				return false, nil
-			}
+			return false
 		}
-		return true, nil
+		return true
 	case string:
-		return strings.Contains(x, b.(string)), nil
+		return strings.Contains(x, b.(string))
 	}
-	return equal(a, b), nil
+	return equal(a, b)
 }
-
-func isBool(v any) bool { _, ok := v.(bool); return ok }
 
 func addAll(v any) (any, error) {
 	var items []any

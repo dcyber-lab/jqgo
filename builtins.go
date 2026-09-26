@@ -53,6 +53,7 @@ func loadBuiltins() error {
 				builtinsErr = fmt.Errorf("jqgo: builtin library: %s: %w", d.name, err)
 				return
 			}
+			markSimple(d.body)
 		}
 	})
 	return builtinsErr

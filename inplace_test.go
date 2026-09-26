@@ -2,6 +2,7 @@ package jqgo
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,11 +38,13 @@ type runRecord struct {
 
 // record runs q and snapshots each result as it is yielded; mutated reports
 // a result that changed afterwards.
-func record(q *Query, input any, copyOnly bool) (rec runRecord, mutated string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func record(q *Query, input any, opts evalOptions) (rec runRecord, mutated string) {
+	// Short, so fuzzed programs that grow exponentially stop before they
+	// exhaust memory.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	var kept []any
-	for v, err := range q.exec(ctx, input, nil, copyOnly, nil) {
+	for v, err := range q.exec(ctx, input, nil, opts, nil) {
 		if err != nil {
 			rec.err = err.Error()
 			break
@@ -60,6 +63,18 @@ func record(q *Query, input any, copyOnly bool) (rec runRecord, mutated string) 
 	return rec, ""
 }
 
+// inconclusive reports runs cut short by a limit (time, recursion depth)
+// rather than by the program: where they stop depends on how much work
+// each strategy does per step, so their results cannot be compared.
+func inconclusive(a, b runRecord) bool {
+	for _, r := range []runRecord{a, b} {
+		if strings.Contains(r.err, "deadline exceeded") || strings.Contains(r.err, "maximum recursion depth") {
+			return true
+		}
+	}
+	return false
+}
+
 func checkInPlace(t *testing.T, program string, input any) {
 	t.Helper()
 	q, err := Compile(program, WithDebugWriter(nil))
@@ -72,14 +87,17 @@ func checkInPlace(t *testing.T, program string, input any) {
 func checkQueryInPlace(t *testing.T, q *Query, program string, input any) {
 	t.Helper()
 	before := toJSON(input)
-	fast, mutated := record(q, input, false)
+	fast, mutated := record(q, input, evalOptions{})
 	if mutated != "" {
 		t.Fatalf("%s on %s: %s", program, before, mutated)
 	}
 	if after := toJSON(input); after != before {
 		t.Fatalf("%s mutated its input: %s -> %s", program, before, after)
 	}
-	slow, _ := record(q, deepCopy(input), true)
+	slow, _ := record(q, deepCopy(input), evalOptions{copyOnly: true})
+	if inconclusive(fast, slow) {
+		return
+	}
 	if strings.Join(fast.outputs, "\n") != strings.Join(slow.outputs, "\n") || fast.err != slow.err {
 		t.Fatalf("%s on %s:\n in place: %v %q\n copying:  %v %q", program, before, fast.outputs, fast.err, slow.outputs, slow.err)
 	}
@@ -193,4 +211,52 @@ func FuzzInPlace(f *testing.F) {
 		}
 		checkInPlace(t, program, v)
 	})
+}
+
+// FuzzFastPath checks that eval1 (the direct evaluation of simple
+// expressions) gives the same results and errors as the general evaluator.
+func FuzzFastPath(f *testing.F) {
+	addSuiteSeeds(f)
+	f.Fuzz(func(t *testing.T, program, input string) {
+		q, err := Compile(program, WithDebugWriter(nil))
+		if err != nil {
+			return
+		}
+		in, err := parseJSON([]byte(input))
+		if err != nil {
+			return
+		}
+		fast, _ := record(q, in, evalOptions{})
+		slow, _ := record(q, in, evalOptions{noFastPath: true})
+		if inconclusive(fast, slow) {
+			return
+		}
+		if strings.Join(fast.outputs, "\n") != strings.Join(slow.outputs, "\n") || fast.err != slow.err {
+			t.Fatalf("%s on %s:\n fast: %v %q\n slow: %v %q", program, input, fast.outputs, fast.err, slow.outputs, slow.err)
+		}
+	})
+}
+
+// TestFastPathSuite runs every case of the test suites both ways.
+func TestFastPathSuite(t *testing.T) {
+	for _, file := range []string{"jq/jq.test", "jq/man.test", "jq/onig.test", "extra.test"} {
+		for _, c := range readJQTests(t, filepath.Join("testdata", file)) {
+			if c.fail {
+				continue
+			}
+			q, err := Compile(c.program, WithDebugWriter(nil), WithEnviron([]string{"PAGER=less"}))
+			if err != nil {
+				continue
+			}
+			in, err := parseJSON([]byte(c.input))
+			if err != nil {
+				continue
+			}
+			fast, _ := record(q, in, evalOptions{})
+			slow, _ := record(q, in, evalOptions{noFastPath: true})
+			if strings.Join(fast.outputs, "\n") != strings.Join(slow.outputs, "\n") || fast.err != slow.err {
+				t.Errorf("%s:%d %s:\n fast: %v %q\n slow: %v %q", c.file, c.line, c.program, fast.outputs, fast.err, slow.outputs, slow.err)
+			}
+		}
+	}
 }

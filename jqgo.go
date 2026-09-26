@@ -138,6 +138,7 @@ func Compile(src string, opts ...Option) (*Query, error) {
 	if err := c.check(root, nil); err != nil {
 		return nil, &CompileError{Query: src, Err: err}
 	}
+	markSimple(root)
 	env := cfg.environ
 	if env == nil {
 		env = map[string]any{}
@@ -166,12 +167,17 @@ func (q *Query) Run(ctx context.Context, input any, vars ...any) iter.Seq2[any, 
 
 // RunWithInputs is Run with a source for the input and inputs builtins.
 func (q *Query) RunWithInputs(ctx context.Context, input any, inputs Inputs, vars ...any) iter.Seq2[any, error] {
-	return q.exec(ctx, input, inputs, false, vars)
+	return q.exec(ctx, input, inputs, evalOptions{}, vars)
 }
 
-// exec runs the query. copyOnly turns off in-place updates, so tests can
-// check that they never change a result.
-func (q *Query) exec(ctx context.Context, input any, inputs Inputs, copyOnly bool, vars []any) iter.Seq2[any, error] {
+// evalOptions turn optimisations off, so tests can check that they never
+// change a result.
+type evalOptions struct {
+	copyOnly   bool // no in-place updates (see ownSet)
+	noFastPath bool // no eval1 for simple expressions
+}
+
+func (q *Query) exec(ctx context.Context, input any, inputs Inputs, opts evalOptions, vars []any) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
 		if ctx == nil {
 			ctx = context.Background()
@@ -185,7 +191,7 @@ func (q *Query) exec(ctx context.Context, input any, inputs Inputs, copyOnly boo
 			yield(nil, err)
 			return
 		}
-		e := &evaluator{ctx: ctx, q: q, inputs: inputs, copyOnly: copyOnly, vars: make(map[string]any, len(q.vars)+2)}
+		e := &evaluator{ctx: ctx, q: q, inputs: inputs, evalOptions: opts, vars: make(map[string]any, len(q.vars)+2)}
 		e.vars["ENV"] = q.environ
 		named := make(map[string]any, len(q.vars))
 		for i, name := range q.vars {

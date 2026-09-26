@@ -1012,3 +1012,32 @@ gmtime | mktime
 [-1, 86399.5]
 [[1969,11,31,23,59,59,3,364],[1970,0,1,23,59,59.5,4,0]]
 
+
+# contains: only a top-level kind mismatch is an error
+contains({foo: 12})
+{"foo":[21]}
+false
+
+contains({foo: 12, bar: 1})
+{"foo":[21]}
+false
+
+contains(["a", 1])
+[1,"a"]
+true
+
+contains([1])
+[[1]]
+false
+
+contains({"a":false})
+{"a":true}
+false
+
+contains({"a":"x"})
+{"a":{"b":1}}
+false
+
+[.[] | try contains(false) catch "error"]
+[true,false]
+["error",true]

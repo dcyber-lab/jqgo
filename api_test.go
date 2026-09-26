@@ -226,6 +226,30 @@ func TestContextCancel(t *testing.T) {
 	}
 }
 
+// A fan-out that emits straight into a collector (no nested run calls)
+// must still notice cancellation quickly; this one grows quadratically.
+func TestContextCancelFanOut(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := MustCompile(`[.[]|[.,1]|until(.[0]<1;[.[0]-1,.[]*.[]])|.[1]]`).All(ctx, []any{1, 2, 7, 4, 5})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("cancellation took %v", d)
+	}
+}
+
+// Repeating a string is capped, so recurse(2*.) on a string stops with an
+// error instead of doubling until memory runs out. (Found by fuzzing.)
+func TestStringRepeatLimit(t *testing.T) {
+	_, err := MustCompile(`[recurse(2 * .)] | length`).All(context.Background(), "ab")
+	if err == nil || err.Error() != "Repeat string result too long" {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestDeepRecursionIsAnError(t *testing.T) {
 	_, err := MustCompile(`def f: 1 + f; f`).All(context.Background(), nil)
 	if !errors.Is(err, errDepth) {

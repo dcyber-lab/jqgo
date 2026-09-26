@@ -12,24 +12,39 @@ type (
 	// indexNode is term[key]; key is evaluated against the term's input,
 	// not against the term's output (jq semantics).
 	indexNode struct {
-		term node
-		key  node
-		name string // fast path for .foo (key == nil)
+		term   node
+		key    node
+		name   string // fast path for .foo (key == nil)
+		simple bool   // see isSimple
 	}
 	sliceNode struct {
 		term     node
 		from, to node // either may be nil
+		simple   bool
 	}
 	iterateNode struct{ term node }
-	pipeNode    struct{ left, right node }
-	commaNode   struct{ left, right node }
-	negNode     struct{ x node }
-	binopNode   struct {
+	pipeNode    struct {
+		left, right node
+		simple      bool
+	}
+	commaNode struct{ left, right node }
+	negNode   struct {
+		x      node
+		simple bool
+	}
+	binopNode struct {
 		op          string // + - * / % == != < <= > >=
 		left, right node
+		simple      bool
 	}
-	andNode    struct{ left, right node }
-	orNode     struct{ left, right node }
+	andNode struct {
+		left, right node
+		simple      bool
+	}
+	orNode struct {
+		left, right node
+		simple      bool
+	}
 	altNode    struct{ left, right node } // //
 	assignNode struct {
 		op          string // = |= += -= *= /= %= //=
@@ -38,6 +53,7 @@ type (
 	ifNode struct {
 		cond, then node
 		els        node // nil means identity
+		simple     bool
 	}
 	tryNode struct {
 		body  node
@@ -64,6 +80,7 @@ type (
 		argDefs []*funcDef  // args wrapped as zero-arity closures, built once
 		lexical bool        // bound by an enclosing def or parameter
 		global  *globalFunc // otherwise, resolved at compile time
+		simple  bool
 	}
 	varNode  struct{ name string }
 	bindNode struct {
@@ -79,11 +96,13 @@ type (
 	arrayNode  struct{ x node } // x nil for []
 	objectNode struct {
 		entries []objEntry
+		simple  bool
 	}
 	textNode   struct{ s string } // literal text inside a string template
 	stringNode struct {
 		parts  []node // textNodes and interpolated expressions
 		format string // "" or e.g. "base64" for @base64 "..."
+		simple bool
 	}
 	formatNode struct{ name string }
 )

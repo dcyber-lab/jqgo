@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 )
 
 // The evaluator is continuation-passing: every node pushes each of its
@@ -75,8 +74,7 @@ type evaluator struct {
 	steps  int
 	depth  int
 
-	// copyOnly disables in-place updates (see ownSet); only tests set it.
-	copyOnly bool
+	evalOptions
 }
 
 // catchable reports whether try/catch, ? and // may intercept err.
@@ -131,12 +129,27 @@ func (p *pathT) toArray() ([]any, error) {
 	return arr, nil
 }
 
-func (e *evaluator) run(n node, env *envT, v any, p *pathT, out emitFunc) error {
+// tick counts a unit of work and checks for cancellation every 1024 of
+// them. Loops that emit without re-entering run (iteration, range, ..)
+// call it too, or a big fan-out could run for a long time unchecked.
+func (e *evaluator) tick() error {
 	e.steps++
 	if e.steps&0x3ff == 0 {
-		if err := e.ctx.Err(); err != nil {
+		return e.ctx.Err()
+	}
+	return nil
+}
+
+func (e *evaluator) run(n node, env *envT, v any, p *pathT, out emitFunc) error {
+	if err := e.tick(); err != nil {
+		return err
+	}
+	if p == nil && !e.noFastPath && isSimple(n) {
+		r, err := e.eval1(n, env, v)
+		if err != nil {
 			return err
 		}
+		return out(r, nil)
 	}
 	e.depth++
 	if e.depth > maxDepth {
@@ -175,7 +188,7 @@ func (e *evaluator) dispatch(n node, env *envT, v any, p *pathT, out emitFunc) e
 		return emitValue(out, val, p)
 	case *iterateNode:
 		return e.run(n.term, env, v, p, func(x any, xp *pathT) error {
-			return iterate(x, xp, out)
+			return e.iterate(x, xp, out)
 		})
 	case *sliceNode:
 		return e.evalSlice(n, env, v, p, out)
@@ -211,16 +224,11 @@ func (e *evaluator) dispatch(n node, env *envT, v any, p *pathT, out emitFunc) e
 		})
 	case *negNode:
 		return e.run(n.x, env, v, nil, func(x any, _ *pathT) error {
-			switch x := x.(type) {
-			case int:
-				if x == math.MinInt {
-					return emitValue(out, -float64(x), p)
-				}
-				return emitValue(out, -x, p)
-			case float64:
-				return emitValue(out, -x, p)
+			r, err := negate(x)
+			if err != nil {
+				return err
 			}
-			return fmt.Errorf("%s cannot be negated", typeDump(x))
+			return emitValue(out, r, p)
 		})
 	case *altNode:
 		return e.evalAlt(n, env, v, p, out)
@@ -354,13 +362,16 @@ func (e *evaluator) evalSlice(n *sliceNode, env *envT, v any, p *pathT, out emit
 	return e.run(n.from, env, v, nil, func(from any, _ *pathT) error { return withTo(from) })
 }
 
-func iterate(x any, xp *pathT, out emitFunc) error {
+func (e *evaluator) iterate(x any, xp *pathT, out emitFunc) error {
 	if xp != nil && xp.invalid {
 		return errPathIterate(xp.value)
 	}
 	switch x := x.(type) {
 	case []any:
 		for i, el := range x {
+			if err := e.tick(); err != nil {
+				return err
+			}
 			el, err := norm(el)
 			if err != nil {
 				return err
@@ -376,6 +387,9 @@ func iterate(x any, xp *pathT, out emitFunc) error {
 		return nil
 	case map[string]any:
 		for _, k := range sortedKeys(x) {
+			if err := e.tick(); err != nil {
+				return err
+			}
 			el, err := norm(x[k])
 			if err != nil {
 				return err
@@ -404,6 +418,9 @@ func (e *evaluator) recurseAll(v any, p *pathT, out emitFunc) error {
 	switch x := v.(type) {
 	case []any:
 		for i, el := range x {
+			if err := e.tick(); err != nil {
+				return err
+			}
 			el, err := norm(el)
 			if err != nil {
 				return err
@@ -418,6 +435,9 @@ func (e *evaluator) recurseAll(v any, p *pathT, out emitFunc) error {
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(x) {
+			if err := e.tick(); err != nil {
+				return err
+			}
 			el, err := norm(x[k])
 			if err != nil {
 				return err
@@ -498,12 +518,9 @@ func (e *evaluator) evalObject(n *objectNode, env *envT, v any, p *pathT, out em
 		}
 		ent := n.entries[i]
 		return e.run(ent.key, env, v, nil, func(k any, _ *pathT) error {
-			ks, ok := k.(string)
-			if !ok {
-				if k == nil {
-					return fmt.Errorf("Cannot use null (null) as object key")
-				}
-				return fmt.Errorf("Object keys must be strings")
+			ks, err := objectKey(k)
+			if err != nil {
+				return err
 			}
 			return e.run(ent.value, env, v, nil, func(val any, _ *pathT) error {
 				old, had := obj[ks]
@@ -543,15 +560,9 @@ func (e *evaluator) evalString(n *stringNode, env *envT, v any, p *pathT, out em
 			return build(i - 1)
 		}
 		return e.run(n.parts[i], env, v, nil, func(x any, _ *pathT) error {
-			var s string
-			if n.format != "" {
-				fs, err := applyFormat(n.format, x)
-				if err != nil {
-					return err
-				}
-				s = fs.(string)
-			} else {
-				s = toString(x)
+			s, err := interpolate(n.format, x)
+			if err != nil {
+				return err
 			}
 			parts[i] = s
 			return build(i - 1)

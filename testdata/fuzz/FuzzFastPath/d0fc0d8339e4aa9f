@@ -1,0 +1,3 @@
+go test fuzz v1
+string("def fac:if.==0then 0else.%(.-1|fac)end;[.[]|fac]")
+string("[10000]")
