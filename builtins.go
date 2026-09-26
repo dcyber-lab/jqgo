@@ -77,6 +77,7 @@ func init() {
 	registerValues()
 	registerArrays()
 	registerStrings()
+	registerRegex()
 	registerTime()
 	registerMath()
 }

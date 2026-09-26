@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 )
 
 func applyFormat(name string, v any) (any, error) {
@@ -142,8 +141,5 @@ func base64Decode(s string) (any, error) {
 }
 
 func validUTF8(b []byte) string {
-	if utf8.Valid(b) {
-		return string(b)
-	}
-	return strings.ToValidUTF8(string(b), "�")
+	return sanitizeUTF8(b)
 }

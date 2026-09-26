@@ -303,9 +303,9 @@ func (e *encoder) writeString(s string) {
 		if r == utf8.RuneError && size == 1 {
 			b.WriteString(s[start:i])
 			if e.ascii {
-				b.WriteString(`�`)
+				b.WriteString(`\ufffd`)
 			} else {
-				b.WriteString("�")
+				b.WriteString("\ufffd")
 			}
 			i += size
 			start = i

@@ -1,37 +1,47 @@
 package jqgo
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"strconv"
-	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // Decoder reads a stream of whitespace-separated JSON values, the input
 // format jq accepts. Objects become map[string]any, integers that fit
-// become int and other numbers float64.
+// become int and other numbers float64. Like jq it also accepts NaN,
+// Infinity and a leading byte order mark.
+//
+// It scans an internal buffer directly: a string without escapes costs one
+// allocation, numbers are parsed in place, and repeated object keys share
+// one string.
 type Decoder struct {
-	r    *bufio.Reader
-	line int
-	col  int
+	r    io.Reader
 	buf  []byte
+	pos  int // next byte to read
+	end  int // end of valid data in buf
+	eof  bool
+	rerr error // read error other than io.EOF
 
-	started bool
+	off       int // stream offset of buf[0]
+	line      int
+	lineStart int // stream offset of the first byte of the current line
+	started   bool
+	keys      map[string]string // interned object keys
 }
 
 // NewDecoder returns a Decoder reading from r.
 func NewDecoder(r io.Reader) *Decoder {
-	br, ok := r.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReaderSize(r, 64*1024)
-	}
-	return &Decoder{r: br, line: 1}
+	return &Decoder{r: r, buf: make([]byte, 64*1024), line: 1}
+}
+
+// newBytesDecoder decodes b without copying it; b is never written to.
+func newBytesDecoder(b []byte) *Decoder {
+	return &Decoder{buf: b, end: len(b), eof: true, line: 1}
 }
 
 // SyntaxError reports malformed JSON input.
@@ -44,82 +54,124 @@ func (e *SyntaxError) Error() string {
 	return fmt.Sprintf("%s at line %d, column %d", e.Msg, e.Line, e.Column)
 }
 
-// Decode returns the next value, or io.EOF when the stream is exhausted.
-func (d *Decoder) Decode() (any, error) {
-	if !d.started {
-		d.started = true
-		if b, err := d.r.Peek(3); err == nil && string(b) == "\ufeff" {
-			d.r.Discard(3)
-		}
-	}
-	c, err := d.skipSpace()
-	if err != nil {
-		return nil, err
-	}
-	return d.value(c)
-}
-
 func parseJSON(b []byte) (any, error) {
-	d := NewDecoder(bytes.NewReader(b))
+	d := newBytesDecoder(b)
 	v, err := d.Decode()
 	if err != nil {
 		if err == io.EOF {
-			return nil, &SyntaxError{Msg: "Expected JSON value", Line: d.line, Column: d.col}
+			return nil, d.errorf("Expected JSON value")
 		}
 		return nil, err
 	}
-	if _, err := d.skipSpace(); err != io.EOF {
-		if err != nil {
-			return nil, err
-		}
+	if _, ok := d.skipSpace(); ok {
 		return nil, d.errorf("Unexpected extra JSON values")
 	}
 	return v, nil
 }
 
+// Decode returns the next value, or io.EOF when the stream is exhausted.
+func (d *Decoder) Decode() (any, error) {
+	if !d.started {
+		d.started = true
+		// Only wait for three bytes when the first could start a BOM, so an
+		// interactive stream is not held up.
+		if d.ensure(1); d.pos < d.end && d.buf[d.pos] == 0xEF {
+			d.ensure(3)
+			if d.end-d.pos >= 3 && string(d.buf[d.pos:d.pos+3]) == "\xef\xbb\xbf" {
+				d.pos += 3
+			}
+		}
+	}
+	c, ok := d.skipSpace()
+	if !ok {
+		if d.rerr != nil {
+			return nil, d.rerr
+		}
+		return nil, io.EOF
+	}
+	d.pos++
+	return d.value(c)
+}
+
 func (d *Decoder) errorf(format string, args ...any) error {
-	return &SyntaxError{Msg: fmt.Sprintf(format, args...), Line: d.line, Column: d.col}
+	return &SyntaxError{Msg: fmt.Sprintf(format, args...), Line: d.line, Column: d.off + d.pos - d.lineStart}
 }
 
-func (d *Decoder) read() (byte, error) {
-	c, err := d.r.ReadByte()
-	if err != nil {
-		return 0, err
+// fill reads more input, keeping buf[pos:end] and moving it to the front.
+// Callers holding an index into buf must subtract the returned shift.
+func (d *Decoder) fill() (shift int, ok bool) {
+	if d.eof {
+		return 0, false
 	}
-	if c == '\n' {
-		d.line++
-		d.col = 0
-	} else {
-		d.col++
+	if d.pos > 0 {
+		shift = d.pos
+		d.end = copy(d.buf, d.buf[d.pos:d.end])
+		d.off += d.pos
+		d.pos = 0
 	}
-	return c, nil
-}
-
-func (d *Decoder) unread() {
-	_ = d.r.UnreadByte()
-	d.col--
-}
-
-func (d *Decoder) skipSpace() (byte, error) {
+	if d.end == len(d.buf) {
+		nb := make([]byte, 2*len(d.buf))
+		copy(nb, d.buf[:d.end])
+		d.buf = nb
+	}
 	for {
-		c, err := d.read()
+		n, err := d.r.Read(d.buf[d.end:])
+		d.end += n
 		if err != nil {
-			return 0, err
+			d.eof = true
+			if err != io.EOF {
+				d.rerr = err
+			}
+			return shift, n > 0
 		}
-		switch c {
-		case ' ', '\t', '\n', '\r':
-			continue
+		if n > 0 {
+			return shift, true
 		}
-		return c, nil
 	}
 }
 
-func (d *Decoder) need() (byte, error) {
-	c, err := d.skipSpace()
-	if err == io.EOF {
+// ensure tries to have n unread bytes buffered.
+func (d *Decoder) ensure(n int) {
+	for d.end-d.pos < n {
+		if _, ok := d.fill(); !ok {
+			return
+		}
+	}
+}
+
+// skipSpace returns the next non-space byte without consuming it.
+func (d *Decoder) skipSpace() (byte, bool) {
+	for {
+		for d.pos < d.end {
+			switch c := d.buf[d.pos]; c {
+			case ' ', '\t', '\r':
+				d.pos++
+			case '\n':
+				d.pos++
+				d.line++
+				d.lineStart = d.off + d.pos
+			default:
+				return c, true
+			}
+		}
+		if _, ok := d.fill(); !ok {
+			return 0, false
+		}
+	}
+}
+
+// next consumes the next non-space byte; running out of input is an error
+// in the middle of a value.
+func (d *Decoder) next() (byte, error) {
+	c, ok := d.skipSpace()
+	if !ok {
+		if d.rerr != nil {
+			return 0, d.rerr
+		}
 		return 0, d.errorf("Unfinished JSON term at EOF")
 	}
-	return c, err
+	d.pos++
+	return c, nil
 }
 
 func (d *Decoder) value(c byte) (any, error) {
@@ -135,12 +187,9 @@ func (d *Decoder) value(c byte) (any, error) {
 	case 'f':
 		return false, d.literal("alse")
 	case 'n':
-		c, err := d.read()
-		if err == nil && c == 'a' {
-			return nan, d.literal("n")
-		}
-		if err == nil {
-			d.unread()
+		d.ensure(1)
+		if d.pos < d.end && d.buf[d.pos] == 'a' {
+			return nan, d.literal("an")
 		}
 		return nil, d.literal("ull")
 	case 'N':
@@ -148,79 +197,84 @@ func (d *Decoder) value(c byte) (any, error) {
 	case 'I':
 		return math.Inf(1), d.literal("nfinity")
 	case '-':
-		if b, _ := d.r.Peek(1); len(b) == 1 {
-			switch b[0] {
+		// Put the '-' back first: looking ahead may refill the buffer,
+		// which drops everything before pos.
+		d.pos--
+		d.ensure(2)
+		if d.end-d.pos >= 2 {
+			switch d.buf[d.pos+1] {
 			case 'I':
-				d.read()
+				d.pos += 2
 				return math.Inf(-1), d.literal("nfinity")
-			case 'N', 'n':
-				d.read()
-				if b[0] == 'N' {
-					return nan, d.literal("aN")
-				}
+			case 'N':
+				d.pos += 2
+				return nan, d.literal("aN")
+			case 'n':
+				d.pos += 2
 				return nan, d.literal("an")
 			}
 		}
-		return d.number(c)
+		return d.number()
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		return d.number(c)
+		d.pos-- // just consumed by next, still in the buffer
+		return d.number()
 	}
 	return nil, d.errorf("Invalid literal %q", rune(c))
 }
 
 func (d *Decoder) literal(rest string) error {
-	for i := 0; i < len(rest); i++ {
-		c, err := d.read()
-		if err != nil || c != rest[i] {
-			return d.errorf("Invalid literal")
-		}
+	d.ensure(len(rest))
+	if d.end-d.pos < len(rest) || string(d.buf[d.pos:d.pos+len(rest)]) != rest {
+		return d.errorf("Invalid literal")
 	}
+	d.pos += len(rest)
 	return d.checkDelim()
 }
 
 // checkDelim makes sure a scalar is not glued to the next token, e.g. "truex".
 func (d *Decoder) checkDelim() error {
-	c, err := d.r.ReadByte()
-	if err != nil {
+	d.ensure(1)
+	if d.pos == d.end {
 		return nil
 	}
-	_ = d.r.UnreadByte()
-	switch c {
+	switch d.buf[d.pos] {
 	case ' ', '\t', '\n', '\r', ',', ']', '}', ':', '[', '{', '"':
 		return nil
 	}
 	return d.errorf("Invalid literal")
 }
 
-func (d *Decoder) number(first byte) (any, error) {
-	d.buf = append(d.buf[:0], first)
-	isInt := true
+// number parses a number starting at pos.
+func (d *Decoder) number() (any, error) {
+	i := d.pos
 	for {
-		c, err := d.r.ReadByte()
-		if err != nil {
-			break
-		}
-		if (c >= '0' && c <= '9') || c == '-' || c == '+' {
-			d.buf = append(d.buf, c)
-			d.col++
+		if i == d.end {
+			shift, ok := d.fill() // keeps buf[pos:], so the digits so far survive
+			i -= shift
+			if !ok {
+				break
+			}
 			continue
 		}
-		if c == '.' || c == 'e' || c == 'E' {
-			isInt = false
-			d.buf = append(d.buf, c)
-			d.col++
+		c := d.buf[i]
+		if (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E' {
+			i++
 			continue
 		}
-		_ = d.r.UnreadByte()
 		break
 	}
-	s := string(d.buf)
+	b := d.buf[d.pos:i]
+	d.pos = i
+	s := unsafe.String(unsafe.SliceData(b), len(b)) // not retained
 	if !validNumber(s) {
 		return nil, d.errorf("Invalid numeric literal")
 	}
-	if isInt {
-		if i, err := strconv.ParseInt(s, 10, 64); err == nil && int64(int(i)) == i {
-			return int(i), d.checkDelim()
+	if n, ok := parseSmallInt(b); ok {
+		return n, d.checkDelim()
+	}
+	if isIntLiteral(b) {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && int64(int(n)) == n {
+			return int(n), d.checkDelim()
 		}
 	}
 	f, err := strconv.ParseFloat(s, 64)
@@ -228,6 +282,38 @@ func (d *Decoder) number(first byte) (any, error) {
 		return nil, d.errorf("Invalid numeric literal")
 	}
 	return f, d.checkDelim()
+}
+
+// parseSmallInt handles the common case of an integer with at most 18
+// digits, which cannot overflow.
+func parseSmallInt(b []byte) (int, bool) {
+	neg := false
+	if len(b) > 0 && b[0] == '-' {
+		neg, b = true, b[1:]
+	}
+	if len(b) == 0 || len(b) > 18 {
+		return 0, false
+	}
+	n := 0
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if neg {
+		n = -n
+	}
+	return n, true
+}
+
+func isIntLiteral(b []byte) bool {
+	for _, c := range b {
+		if c == '.' || c == 'e' || c == 'E' {
+			return false
+		}
+	}
+	return true
 }
 
 // validNumber checks JSON number grammar (strconv is more permissive).
@@ -274,95 +360,131 @@ func validNumber(s string) bool {
 	return i == len(s)
 }
 
-func (d *Decoder) str() (string, error) {
-	var sb strings.Builder
+// strBytes scans a string whose opening quote was consumed. Without
+// escapes it returns a view into the buffer (valid until the next read);
+// otherwise it decodes into a fresh slice.
+func (d *Decoder) strBytes() ([]byte, error) {
+	i := d.pos
 	for {
-		c, err := d.r.ReadByte()
-		if err != nil {
-			return "", d.errorf("Unfinished string at EOF")
+		if i == d.end {
+			shift, ok := d.fill()
+			i -= shift
+			if !ok {
+				return nil, d.errorf("Unfinished string at EOF")
+			}
+			continue
 		}
-		d.col++
-		switch {
+		switch c := d.buf[i]; {
 		case c == '"':
-			s := sb.String()
-			if !utf8.ValidString(s) {
-				s = strings.ToValidUTF8(s, "�")
-			}
-			return s, nil
+			b := d.buf[d.pos:i]
+			d.pos = i + 1
+			return b, nil
 		case c == '\\':
-			if err := d.escape(&sb); err != nil {
-				return "", err
-			}
+			return d.strSlow(i)
 		case c == '\n':
 			d.line++
-			d.col = 0
-			sb.WriteByte(c)
+			d.lineStart = d.off + i + 1
+		}
+		i++
+	}
+}
+
+// strSlow continues a string that has escapes, from buf[i] onwards.
+func (d *Decoder) strSlow(i int) ([]byte, error) {
+	out := append([]byte(nil), d.buf[d.pos:i]...)
+	d.pos = i
+	for {
+		if d.pos == d.end {
+			if _, ok := d.fill(); !ok {
+				return nil, d.errorf("Unfinished string at EOF")
+			}
+			continue
+		}
+		c := d.buf[d.pos]
+		d.pos++
+		switch c {
+		case '"':
+			return out, nil
+		case '\\':
+			var err error
+			if out, err = d.escape(out); err != nil {
+				return nil, err
+			}
+		case '\n':
+			d.line++
+			d.lineStart = d.off + d.pos
+			out = append(out, c)
 		default:
-			sb.WriteByte(c)
+			out = append(out, c)
 		}
 	}
 }
 
-func (d *Decoder) escape(sb *strings.Builder) error {
-	c, err := d.read()
+func (d *Decoder) str() (string, error) {
+	b, err := d.strBytes()
 	if err != nil {
-		return d.errorf("Unfinished string at EOF")
+		return "", err
 	}
+	return sanitizeUTF8(b), nil
+}
+
+func (d *Decoder) escape(out []byte) ([]byte, error) {
+	d.ensure(1)
+	if d.pos == d.end {
+		return nil, d.errorf("Unfinished string at EOF")
+	}
+	c := d.buf[d.pos]
+	d.pos++
 	switch c {
 	case '"', '\\', '/':
-		sb.WriteByte(c)
+		return append(out, c), nil
 	case 'b':
-		sb.WriteByte('\b')
+		return append(out, '\b'), nil
 	case 'f':
-		sb.WriteByte('\f')
+		return append(out, '\f'), nil
 	case 'n':
-		sb.WriteByte('\n')
+		return append(out, '\n'), nil
 	case 'r':
-		sb.WriteByte('\r')
+		return append(out, '\r'), nil
 	case 't':
-		sb.WriteByte('\t')
+		return append(out, '\t'), nil
 	case 'u':
 		r, err := d.hex4()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if utf16.IsSurrogate(r) {
 			// Try to pair with a following \uXXXX low surrogate.
-			if b, _ := d.r.Peek(2); len(b) == 2 && b[0] == '\\' && b[1] == 'u' {
-				d.read()
-				d.read()
+			d.ensure(2)
+			if d.end-d.pos >= 2 && d.buf[d.pos] == '\\' && d.buf[d.pos+1] == 'u' {
+				d.pos += 2
 				r2, err := d.hex4()
 				if err != nil {
-					return err
+					return nil, err
 				}
 				if dec := utf16.DecodeRune(r, r2); dec != utf8.RuneError {
-					sb.WriteRune(dec)
-					return nil
+					return utf8.AppendRune(out, dec), nil
 				}
-				sb.WriteRune(utf8.RuneError)
+				out = utf8.AppendRune(out, utf8.RuneError)
 				if utf16.IsSurrogate(r2) {
-					sb.WriteRune(utf8.RuneError)
-				} else {
-					sb.WriteRune(r2)
+					return utf8.AppendRune(out, utf8.RuneError), nil
 				}
-				return nil
+				return utf8.AppendRune(out, r2), nil
 			}
 			r = utf8.RuneError
 		}
-		sb.WriteRune(r)
-	default:
-		return d.errorf("Invalid escape")
+		return utf8.AppendRune(out, r), nil
 	}
-	return nil
+	return nil, d.errorf("Invalid escape")
 }
 
 func (d *Decoder) hex4() (rune, error) {
+	d.ensure(4)
+	if d.end-d.pos < 4 {
+		return 0, d.errorf("Invalid \\uXXXX escape")
+	}
 	var r rune
-	for i := 0; i < 4; i++ {
-		c, err := d.read()
-		if err != nil {
-			return 0, d.errorf("Invalid \\uXXXX escape")
-		}
+	for _, c := range d.buf[d.pos : d.pos+4] {
 		switch {
 		case c >= '0' && c <= '9':
 			r = r<<4 | rune(c-'0')
@@ -374,12 +496,13 @@ func (d *Decoder) hex4() (rune, error) {
 			return 0, d.errorf("Invalid \\uXXXX escape")
 		}
 	}
+	d.pos += 4
 	return r, nil
 }
 
 func (d *Decoder) array() (any, error) {
 	arr := []any{}
-	c, err := d.need()
+	c, err := d.next()
 	if err != nil {
 		return nil, err
 	}
@@ -392,8 +515,7 @@ func (d *Decoder) array() (any, error) {
 			return nil, err
 		}
 		arr = append(arr, v)
-		c, err = d.need()
-		if err != nil {
+		if c, err = d.next(); err != nil {
 			return nil, err
 		}
 		if c == ']' {
@@ -402,15 +524,38 @@ func (d *Decoder) array() (any, error) {
 		if c != ',' {
 			return nil, d.errorf("Expected separator between values")
 		}
-		if c, err = d.need(); err != nil {
+		if c, err = d.next(); err != nil {
 			return nil, err
 		}
 	}
 }
 
+// key decodes an object key, sharing the string with earlier identical
+// keys: arrays of records repeat the same few keys over and over.
+func (d *Decoder) key() (string, error) {
+	b, err := d.strBytes()
+	if err != nil {
+		return "", err
+	}
+	if len(b) > 64 || !utf8.Valid(b) {
+		return sanitizeUTF8(b), nil
+	}
+	if s, ok := d.keys[string(b)]; ok { // no allocation for the lookup
+		return s, nil
+	}
+	s := string(b)
+	if d.keys == nil {
+		d.keys = map[string]string{}
+	}
+	if len(d.keys) < 4096 {
+		d.keys[s] = s
+	}
+	return s, nil
+}
+
 func (d *Decoder) object() (any, error) {
 	obj := map[string]any{}
-	c, err := d.need()
+	c, err := d.next()
 	if err != nil {
 		return nil, err
 	}
@@ -421,17 +566,17 @@ func (d *Decoder) object() (any, error) {
 		if c != '"' {
 			return nil, d.errorf("Object keys must be strings")
 		}
-		k, err := d.str()
+		k, err := d.key()
 		if err != nil {
 			return nil, err
 		}
-		if c, err = d.need(); err != nil {
+		if c, err = d.next(); err != nil {
 			return nil, err
 		}
 		if c != ':' {
 			return nil, d.errorf("Objects must consist of key:value pairs")
 		}
-		if c, err = d.need(); err != nil {
+		if c, err = d.next(); err != nil {
 			return nil, err
 		}
 		v, err := d.value(c)
@@ -439,7 +584,7 @@ func (d *Decoder) object() (any, error) {
 			return nil, err
 		}
 		obj[k] = v
-		if c, err = d.need(); err != nil {
+		if c, err = d.next(); err != nil {
 			return nil, err
 		}
 		if c == '}' {
@@ -448,7 +593,7 @@ func (d *Decoder) object() (any, error) {
 		if c != ',' {
 			return nil, d.errorf("Expected separator between values")
 		}
-		if c, err = d.need(); err != nil {
+		if c, err = d.next(); err != nil {
 			return nil, err
 		}
 	}

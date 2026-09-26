@@ -20,9 +20,10 @@ type compiledRegex struct {
 	noEmpty bool
 }
 
-var regexCache sync.Map // regexKey -> *compiledRegex
-var regexCacheSize int
-var regexCacheMu sync.Mutex
+var (
+	regexMu    sync.RWMutex
+	regexCache = map[regexKey]*compiledRegex{}
+)
 
 func compileRegex(re any, flags any) (*compiledRegex, error) {
 	rs, ok := re.(string)
@@ -38,10 +39,13 @@ func compileRegex(re any, flags any) (*compiledRegex, error) {
 		fs = s
 	}
 	key := regexKey{rs, fs}
-	if c, ok := regexCache.Load(key); ok {
-		return c.(*compiledRegex), nil
+	regexMu.RLock()
+	c, ok := regexCache[key]
+	regexMu.RUnlock()
+	if ok {
+		return c, nil
 	}
-	c := &compiledRegex{}
+	c = &compiledRegex{}
 	var prefix string
 	longest, extended := false, false
 	for _, f := range fs {
@@ -79,14 +83,12 @@ func compileRegex(re any, flags any) (*compiledRegex, error) {
 		compiled.Longest()
 	}
 	c.re = compiled
-	regexCacheMu.Lock()
-	if regexCacheSize > 1024 {
-		regexCache.Range(func(k, _ any) bool { regexCache.Delete(k); return true })
-		regexCacheSize = 0
+	regexMu.Lock()
+	if len(regexCache) >= 1024 { // queries building regexes from data
+		clear(regexCache)
 	}
-	regexCacheSize++
-	regexCacheMu.Unlock()
-	regexCache.Store(key, c)
+	regexCache[key] = c
+	regexMu.Unlock()
 	return c, nil
 }
 
@@ -191,6 +193,91 @@ func matchObject(c *compiledRegex, s string, m []int, ro *runeOffsets) map[strin
 	return map[string]any{
 		"offset": so, "length": ro.at(m[1]) - so, "string": s[m[0]:m[1]], "captures": caps,
 	}
+}
+
+func registerRegex() {
+	defFn("_match_impl", 3, matchImpl)
+	defFn("split", 2, splitRegex)
+	defGen("sub", 3, subImpl)
+	defFn("test", 2, func(e *evaluator, v any, args []any) (any, error) {
+		return matchImpl(e, v, []any{args[0], args[1], true})
+	})
+	defFn("test", 1, func(e *evaluator, v any, args []any) (any, error) {
+		re, flags, err := regexArg(args[0])
+		if err != nil {
+			return nil, err
+		}
+		return matchImpl(e, v, []any{re, flags, true})
+	})
+	emitMatches := func(e *evaluator, v, re, flags any, capture bool, p *pathT, out emitFunc) error {
+		ms, err := matchImpl(e, v, []any{re, flags, false})
+		if err != nil {
+			return err
+		}
+		for _, m := range ms.([]any) {
+			if capture {
+				m = captureFromMatch(m.(map[string]any))
+			}
+			if err := emitValue(out, m, p); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, capture := range []bool{false, true} {
+		capture := capture
+		name := "match"
+		if capture {
+			name = "capture"
+		}
+		// match(re; flags): flags vary slowest, as for _match_impl.
+		defGen(name, 2, func(e *evaluator, n *callNode, env *envT, v any, p *pathT, out emitFunc) error {
+			return e.evalArg(n, 1, env, v, func(flags any) error {
+				return e.evalArg(n, 0, env, v, func(re any) error {
+					return emitMatches(e, v, re, flags, capture, p, out)
+				})
+			})
+		})
+		defGen(name, 1, func(e *evaluator, n *callNode, env *envT, v any, p *pathT, out emitFunc) error {
+			return e.evalArg(n, 0, env, v, func(val any) error {
+				re, flags, err := regexArg(val)
+				if err != nil {
+					return err
+				}
+				return emitMatches(e, v, re, flags, capture, p, out)
+			})
+		})
+	}
+}
+
+// regexArg splits the one-argument form of test, match and capture: a
+// regex string, or [regex, flags].
+func regexArg(val any) (re, flags any, err error) {
+	switch x := val.(type) {
+	case string:
+		return x, nil, nil
+	case []any:
+		switch {
+		case len(x) > 1:
+			return top(x[0]), top(x[1]), nil
+		case len(x) > 0:
+			return top(x[0]), nil, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("%s not a string or array", typeName(val))
+}
+
+// captureFromMatch turns a match object into {name: string} for its named
+// groups.
+func captureFromMatch(m map[string]any) map[string]any {
+	obj := map[string]any{}
+	for _, c := range m["captures"].([]any) {
+		c := c.(map[string]any)
+		if name, ok := c["name"].(string); ok {
+			obj[name] = c["string"]
+		}
+	}
+	return obj
 }
 
 // matchImpl is _match_impl(re; flags; test).

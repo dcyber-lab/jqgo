@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -325,6 +326,16 @@ func kindOrder(v any) int {
 
 // compare implements jq's total order over values.
 func compare(a, b any) int {
+	switch x := a.(type) {
+	case string:
+		if y, ok := b.(string); ok {
+			return strings.Compare(x, y)
+		}
+	case int:
+		if y, ok := b.(int); ok {
+			return cmpInt(x, y)
+		}
+	}
 	a, b = top(a), top(b)
 	ka, kb := kindOrder(a), kindOrder(b)
 	if ka != kb {

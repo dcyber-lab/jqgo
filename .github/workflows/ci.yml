@@ -24,3 +24,4 @@ jobs:
           go test -run '^$' -fuzz FuzzQuery -fuzztime 30s .
           go test -run '^$' -fuzz FuzzInPlace -fuzztime 30s .
           go test -run '^$' -fuzz FuzzFastPath -fuzztime 30s .
+          go test -run '^$' -fuzz FuzzDecode -fuzztime 30s .

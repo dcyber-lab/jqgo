@@ -69,24 +69,6 @@ def date: todate;
 def dateadd(u; n): . + n;
 def datesub(u; n): . - n;
 
-def match(re; mode): _match_impl(re; mode; false) | .[];
-def match($val): ($val | type) as $vt |
-  if $vt == "string" then match($val; null)
-  elif $vt == "array" and ($val | length) > 1 then match($val[0]; $val[1])
-  elif $vt == "array" and ($val | length) > 0 then match($val[0]; null)
-  else error($vt + " not a string or array") end;
-def test(re; mode): _match_impl(re; mode; true);
-def test($val): ($val | type) as $vt |
-  if $vt == "string" then test($val; null)
-  elif $vt == "array" and ($val | length) > 1 then test($val[0]; $val[1])
-  elif $vt == "array" and ($val | length) > 0 then test($val[0]; null)
-  else error($vt + " not a string or array") end;
-def capture(re; mods): match(re; mods) | [.captures | .[] | select(.name != null) | {key: .name, value: .string}] | from_entries;
-def capture($val): ($val | type) as $vt |
-  if $vt == "string" then capture($val; null)
-  elif $vt == "array" and ($val | length) > 1 then capture($val[0]; $val[1])
-  elif $vt == "array" and ($val | length) > 0 then capture($val[0]; null)
-  else error($vt + " not a string or array") end;
 def scan($re; $flags): match($re; "g" + ($flags // "")) | if (.captures | length) > 0 then [.captures | .[] | .string] else .string end;
 def scan($re): scan($re; null);
 def splits($re; flags): split($re; flags) | .[];

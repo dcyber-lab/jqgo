@@ -117,9 +117,6 @@ func registerStrings() {
 		}
 		return applyFormat(name, v)
 	})
-	defFn("_match_impl", 3, matchImpl)
-	defFn("split", 2, splitRegex)
-	defGen("sub", 3, subImpl)
 }
 
 func asciiMap(s string, lo, hi byte, delta int) string {

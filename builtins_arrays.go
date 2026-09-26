@@ -2,6 +2,7 @@ package jqgo
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -15,9 +16,7 @@ func registerArrays() {
 		if !ok {
 			return nil, errNotSortable(v)
 		}
-		out := cloneSlice(arr, 0)
-		sort.SliceStable(out, func(i, j int) bool { return compare(out[i], out[j]) < 0 })
-		return out, nil
+		return sortValues(arr), nil
 	})
 	defFn("_sort_by_impl", 1, func(e *evaluator, v any, args []any) (any, error) {
 		arr, keys, err := byImplArgs(v, args[0], "sorted")
@@ -78,8 +77,7 @@ func registerArrays() {
 		if !ok {
 			return nil, errNotSortable(v)
 		}
-		s := cloneSlice(arr, 0)
-		sort.SliceStable(s, func(i, j int) bool { return compare(s[i], s[j]) < 0 })
+		s := sortValues(arr)
 		out := []any{}
 		for i, x := range s {
 			if i > 0 && compare(s[i-1], x) == 0 {
@@ -220,13 +218,29 @@ func byImplArgs(v, keys any, verb string) ([]any, []any, error) {
 	return arr, ks, nil
 }
 
+// sortedIndex returns the permutation that sorts keys stably. Sorting the
+// indices with pdqsort and breaking ties by position is stable and much
+// faster than a merge-based stable sort of the values themselves.
 func sortedIndex(keys []any) []int {
 	idx := make([]int, len(keys))
 	for i := range idx {
 		idx[i] = i
 	}
-	sort.SliceStable(idx, func(i, j int) bool { return compare(keys[idx[i]], keys[idx[j]]) < 0 })
+	slices.SortFunc(idx, func(a, b int) int {
+		if c := compare(keys[a], keys[b]); c != 0 {
+			return c
+		}
+		return a - b
+	})
 	return idx
+}
+
+func sortValues(arr []any) []any {
+	out := make([]any, len(arr))
+	for i, j := range sortedIndex(arr) {
+		out[i] = arr[j]
+	}
+	return out
 }
 
 // extremeBy returns the element with the smallest (first one wins) or
