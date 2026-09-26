@@ -191,19 +191,18 @@ func (q *Query) exec(ctx context.Context, input any, inputs Inputs, opts evalOpt
 			yield(nil, err)
 			return
 		}
-		e := &evaluator{ctx: ctx, q: q, inputs: inputs, evalOptions: opts, vars: make(map[string]any, len(q.vars)+2)}
-		e.vars["ENV"] = q.environ
-		named := make(map[string]any, len(q.vars))
-		for i, name := range q.vars {
-			v, err := norm(vars[i])
-			if err != nil {
-				yield(nil, fmt.Errorf("jqgo: variable $%s: %w", name, err))
-				return
+		e := &evaluator{ctx: ctx, q: q, inputs: inputs, evalOptions: opts}
+		if len(vars) > 0 {
+			e.vals = make([]any, len(vars))
+			for i, name := range q.vars {
+				v, err := norm(vars[i])
+				if err != nil {
+					yield(nil, fmt.Errorf("jqgo: variable $%s: %w", name, err))
+					return
+				}
+				e.vals[i] = v
 			}
-			e.vars[name] = v
-			named[name] = v
 		}
-		e.vars["__prog_args"] = map[string]any{"positional": []any{}, "named": named}
 		stop := &stopError{}
 		inYield := false
 		defer func() {

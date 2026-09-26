@@ -39,6 +39,7 @@ Options:
   -C, --color-output        colorize output
   -M, --monochrome-output   do not colorize output
   -S, --sort-keys           sort object keys (always on in jqgo)
+      --unbuffered          flush the output after each input
   -e, --exit-status         set the exit status from the last output
   -f, --from-file file      read the filter from file
       --arg name value      set $name to the string value
@@ -53,7 +54,7 @@ Options:
 
 type options struct {
 	nullInput, rawInput, slurp, rawOutput, joinOutput, ascii bool
-	rawOutput0, seq                                          bool
+	rawOutput0, seq, unbuffered                              bool
 	compact, tab, exitStatus                                 bool
 	color                                                    int // -1 off, 0 auto, 1 on
 	indent                                                   int
@@ -116,6 +117,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
+	flushEach := opts.unbuffered || isTerminal(stdout)
 	in := newInputStream(opts, stdin, stderr)
 	encoder := jqgo.NewEncoder(out, enc)
 	exit := 0
@@ -155,7 +157,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return true
 			}
 		}
-		out.Flush()
+		// Flushing after every input costs a write per record; jq only does
+		// it for a terminal or with --unbuffered (e.g. tail -f | jq).
+		if flushEach {
+			out.Flush()
+		}
 		return true
 	}
 
@@ -308,7 +314,9 @@ func parseArgs(args []string) (options, string, error) {
 				opts.color = 1
 			case "--monochrome-output":
 				opts.color = -1
-			case "--sort-keys", "--unbuffered":
+			case "--unbuffered":
+				opts.unbuffered = true
+			case "--sort-keys":
 			case "--exit-status":
 				opts.exitStatus = true
 			case "--indent":

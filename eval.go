@@ -69,7 +69,7 @@ const maxDepth = 100000
 type evaluator struct {
 	ctx    context.Context
 	q      *Query
-	vars   map[string]any
+	vals   []any // values of q.vars, in order
 	inputs Inputs
 	steps  int
 	depth  int
@@ -302,8 +302,20 @@ func (e *evaluator) lookupVar(env *envT, name string) (any, error) {
 			return x.value, nil
 		}
 	}
-	if v, ok := e.vars[name]; ok {
-		return v, nil
+	for i, n := range e.q.vars {
+		if n == name {
+			return e.vals[i], nil
+		}
+	}
+	switch name {
+	case "ENV":
+		return e.q.environ, nil
+	case "__prog_args":
+		named := make(map[string]any, len(e.q.vars))
+		for i, n := range e.q.vars {
+			named[n] = e.vals[i]
+		}
+		return map[string]any{"positional": []any{}, "named": named}, nil
 	}
 	return nil, fmt.Errorf("$%s is not defined", name)
 }

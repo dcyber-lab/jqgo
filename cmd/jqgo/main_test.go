@@ -76,6 +76,7 @@ func TestCLI(t *testing.T) {
 		{"seq input skips bad records", "\x1e1\n\x1e[3\n\x1e4\n", []string{"-c", "--seq", "."}, "\x1e1\n\x1e4\n", 0},
 		{"raw output0", ``, []string{"-n", "--raw-output0", `"a", 1, [2]`}, "a\x001\x00[\n  2\n]\x00", 0},
 		{"raw output0 rejects NUL", ``, []string{"-n", "--raw-output0", `"ok", "a\u0000b", "never"`}, "ok\x00", 5},
+		{"unbuffered", "1 2", []string{"--unbuffered", "-c", "."}, "1\n2\n", 0},
 		{"help", ``, []string{"--help"}, usage, 0},
 		{"unknown option", ``, []string{"--nope", "."}, "", 2},
 		{"missing filter", ``, []string{}, "", 2},
