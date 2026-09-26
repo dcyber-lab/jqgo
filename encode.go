@@ -233,7 +233,11 @@ func (e *encoder) encode(v any, level int) {
 		e.buf.WriteByte('}')
 		e.reset()
 	default:
-		// Only reachable through a custom function returning something odd.
+		// A value from the caller that has not been converted yet.
+		if nv := top(v); isCanonicalTop(nv) {
+			e.encode(nv, level)
+			return
+		}
 		e.writeString(typeName(v))
 	}
 }

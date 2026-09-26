@@ -164,6 +164,7 @@ func registerArrays() {
 		}
 		out := make(map[string]any, len(arr))
 		for _, ent := range arr {
+			ent = top(ent)
 			m, ok := ent.(map[string]any)
 			if !ok {
 				if ent == nil {
@@ -173,7 +174,7 @@ func registerArrays() {
 			}
 			var key any
 			for _, name := range []string{"key", "Key", "name", "Name"} {
-				if k := m[name]; truthy(k) {
+				if k := top(m[name]); truthy(k) {
 					key = k
 					break
 				}
@@ -249,7 +250,7 @@ func extremeBy(v, keys any, max bool) (any, error) {
 			best = i
 		}
 	}
-	return arr[best], nil
+	return norm(arr[best])
 }
 
 func flatten(v any, depth float64) (any, error) {
@@ -261,6 +262,7 @@ func flatten(v any, depth float64) (any, error) {
 	var rec func(a []any, d float64)
 	rec = func(a []any, d float64) {
 		for _, x := range a {
+			x = top(x)
 			if sub, ok := x.([]any); ok && d > 0 {
 				rec(sub, d-1)
 			} else {

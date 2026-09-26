@@ -152,6 +152,7 @@ func numPred(f func(float64) bool) valueFunc {
 }
 
 func contains(a, b any) (any, error) {
+	a, b = top(a), top(b)
 	if kindOrder(a) != kindOrder(b) && !(isBool(a) && isBool(b)) {
 		return nil, fmt.Errorf("%s and %s cannot have their containment checked", typeDump(a), typeDump(b))
 	}
@@ -208,10 +209,13 @@ func addAll(v any) (any, error) {
 	case nil:
 		return nil, nil
 	case []any:
-		items = x
+		items = make([]any, len(x))
+		for i, it := range x {
+			items[i] = top(it)
+		}
 	case map[string]any:
 		for _, k := range sortedKeys(x) {
-			items = append(items, x[k])
+			items = append(items, top(x[k]))
 		}
 	default:
 		return nil, errIterate(v)

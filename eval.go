@@ -361,6 +361,10 @@ func iterate(x any, xp *pathT, out emitFunc) error {
 	switch x := x.(type) {
 	case []any:
 		for i, el := range x {
+			el, err := norm(el)
+			if err != nil {
+				return err
+			}
 			var np *pathT
 			if xp != nil {
 				np = &pathT{parent: xp, key: i}
@@ -372,11 +376,15 @@ func iterate(x any, xp *pathT, out emitFunc) error {
 		return nil
 	case map[string]any:
 		for _, k := range sortedKeys(x) {
+			el, err := norm(x[k])
+			if err != nil {
+				return err
+			}
 			var np *pathT
 			if xp != nil {
 				np = &pathT{parent: xp, key: k}
 			}
-			if err := out(x[k], np); err != nil {
+			if err := out(el, np); err != nil {
 				return err
 			}
 		}
@@ -396,6 +404,10 @@ func (e *evaluator) recurseAll(v any, p *pathT, out emitFunc) error {
 	switch x := v.(type) {
 	case []any:
 		for i, el := range x {
+			el, err := norm(el)
+			if err != nil {
+				return err
+			}
 			var np *pathT
 			if p != nil {
 				np = &pathT{parent: p, key: i}
@@ -406,11 +418,15 @@ func (e *evaluator) recurseAll(v any, p *pathT, out emitFunc) error {
 		}
 	case map[string]any:
 		for _, k := range sortedKeys(x) {
+			el, err := norm(x[k])
+			if err != nil {
+				return err
+			}
 			var np *pathT
 			if p != nil {
 				np = &pathT{parent: p, key: k}
 			}
-			if err := e.recurseAll(x[k], np, out); err != nil {
+			if err := e.recurseAll(el, np, out); err != nil {
 				return err
 			}
 		}
@@ -837,5 +853,5 @@ func (e *evaluator) nextInput() (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return normalize(v)
+	return norm(v)
 }

@@ -63,7 +63,7 @@ func csvRow(v any) (any, error) {
 	}
 	parts := make([]string, len(arr))
 	for i, x := range arr {
-		switch x := x.(type) {
+		switch x := top(x).(type) {
 		case nil:
 		case bool, int, float64:
 			parts[i] = toJSON(x)
@@ -85,7 +85,7 @@ func tsvRow(v any) (any, error) {
 	}
 	parts := make([]string, len(arr))
 	for i, x := range arr {
-		switch x := x.(type) {
+		switch x := top(x).(type) {
 		case nil:
 		case bool, int, float64:
 			parts[i] = toJSON(x)
@@ -100,7 +100,7 @@ func tsvRow(v any) (any, error) {
 
 func shQuote(v any) (any, error) {
 	quote := func(x any) (string, error) {
-		switch x := x.(type) {
+		switch x := top(x).(type) {
 		case string:
 			return "'" + strings.ReplaceAll(x, "'", `'\''`) + "'", nil
 		case []any, map[string]any:

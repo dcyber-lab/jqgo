@@ -82,7 +82,7 @@ func WithFunction(name string, minArity, maxArity int, fn Func) Option {
 				if err != nil {
 					return nil, err
 				}
-				return normalize(r)
+				return norm(r)
 			}}
 		}
 	}
@@ -180,7 +180,7 @@ func (q *Query) exec(ctx context.Context, input any, inputs Inputs, copyOnly boo
 			yield(nil, fmt.Errorf("jqgo: query declares %d variable(s) but %d value(s) were given", len(q.vars), len(vars)))
 			return
 		}
-		in, err := normalize(input)
+		in, err := norm(input)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -189,7 +189,7 @@ func (q *Query) exec(ctx context.Context, input any, inputs Inputs, copyOnly boo
 		e.vars["ENV"] = q.environ
 		named := make(map[string]any, len(q.vars))
 		for i, name := range q.vars {
-			v, err := normalize(vars[i])
+			v, err := norm(vars[i])
 			if err != nil {
 				yield(nil, fmt.Errorf("jqgo: variable $%s: %w", name, err))
 				return

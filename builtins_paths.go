@@ -51,7 +51,7 @@ func registerPaths() {
 		}
 		paths := make([][]any, len(ps))
 		for i, x := range ps {
-			path, ok := x.([]any)
+			path, ok := top(x).([]any)
 			if !ok {
 				return nil, fmt.Errorf("Path must be specified as an array")
 			}

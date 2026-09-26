@@ -3,11 +3,14 @@ package jqgo
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +109,11 @@ func loadSkips(t *testing.T) map[string]string {
 }
 
 func runJQCase(c jqCase) error {
+	return runJQCaseWith(c, nil)
+}
+
+// runJQCaseWith runs c with its input passed through transform first.
+func runJQCaseWith(c jqCase, transform func(any) any) error {
 	q, err := Compile(c.program, WithEnviron([]string{"PAGER=less"}), WithDebugWriter(io.Discard))
 	if c.fail {
 		if err == nil {
@@ -119,6 +127,9 @@ func runJQCase(c jqCase) error {
 	input, err := parseJSON([]byte(c.input))
 	if err != nil {
 		return fmt.Errorf("bad input %q: %v", c.input, err)
+	}
+	if transform != nil {
+		input = transform(input)
 	}
 	var want []any
 	for _, o := range c.outputs {
@@ -193,6 +204,114 @@ func TestJQSuite(t *testing.T) {
 	for prog := range skips {
 		if !used[prog] {
 			t.Errorf("skip.txt entry matches no test: %s", prog)
+		}
+	}
+}
+
+type (
+	looseString string
+	looseBool   bool
+)
+
+// loosen rewrites a canonical value into the other Go shapes a caller may
+// pass (int64, json.Number, custom string types, []string, raw JSON...),
+// rotating through them by position so every kind shows up everywhere.
+func loosen(v any) any {
+	n := 0
+	var rec func(v any) any
+	rec = func(v any) any {
+		n++
+		switch x := v.(type) {
+		case nil:
+			if n%3 == 0 {
+				return (*int)(nil)
+			}
+		case bool:
+			if n%2 == 0 {
+				return looseBool(x)
+			}
+		case int:
+			switch n % 4 {
+			case 0:
+				return int64(x)
+			case 1:
+				if x >= math.MinInt32 && x <= math.MaxInt32 {
+					return int32(x)
+				}
+			case 2:
+				if x >= 0 && x <= math.MaxUint16 {
+					return uint16(x)
+				}
+			case 3:
+				return json.Number(strconv.Itoa(x))
+			}
+		case float64:
+			if n%2 == 0 && !math.IsNaN(x) && !math.IsInf(x, 0) {
+				return json.Number(strconv.FormatFloat(x, 'g', -1, 64))
+			}
+		case string:
+			if n%2 == 0 {
+				return looseString(x)
+			}
+		case []any:
+			switch n % 3 {
+			case 0:
+				return json.RawMessage(Marshal(x))
+			case 1:
+				strs := make([]string, 0, len(x))
+				for _, e := range x {
+					if s, ok := e.(string); ok {
+						strs = append(strs, s)
+					}
+				}
+				if len(strs) == len(x) && len(x) > 0 {
+					return strs
+				}
+			}
+			out := make([]any, len(x))
+			for i, e := range x {
+				out[i] = rec(e)
+			}
+			return out
+		case map[string]any:
+			switch n % 3 {
+			case 0:
+				return json.RawMessage(Marshal(x))
+			case 1:
+				strs := map[string]string{}
+				for k, e := range x {
+					if s, ok := e.(string); ok {
+						strs[k] = s
+					}
+				}
+				if len(strs) == len(x) && len(x) > 0 {
+					return strs
+				}
+			}
+			out := make(map[string]any, len(x))
+			for k, e := range x {
+				out[k] = rec(e)
+			}
+			return out
+		}
+		return v
+	}
+	return rec(v)
+}
+
+// TestJQSuiteLooseInput reruns jq's suites with inputs in non-canonical Go
+// shapes. Inputs are converted lazily, element by element, so any code
+// path that reads inside a container without converting shows up here.
+func TestJQSuiteLooseInput(t *testing.T) {
+	skips := loadSkips(t)
+	for _, file := range []string{"jq/jq.test", "jq/man.test", "jq/onig.test", "extra.test"} {
+		for _, c := range readJQTests(t, filepath.Join("testdata", file)) {
+			if _, ok := skips[c.program]; ok || c.fail {
+				continue
+			}
+			if err := runJQCaseWith(c, loosen); err != nil {
+				t.Errorf("%s:%d: %s\n    input %s\n    %v", c.file, c.line, c.program, c.input, err)
+			}
 		}
 	}
 }

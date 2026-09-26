@@ -152,7 +152,7 @@ func join(v, sep any) (any, error) {
 		if i > 0 {
 			sb.WriteString(s)
 		}
-		switch x := x.(type) {
+		switch x := top(x).(type) {
 		case nil:
 		case string:
 			sb.WriteString(x)

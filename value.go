@@ -17,64 +17,108 @@ import (
 // Integers that fit in an int stay ints; everything else numeric is a
 // float64. Values are treated as immutable: the evaluator never mutates a
 // map or slice it did not allocate itself during the current operation.
+//
+// Values from the caller are converted lazily. Everything the evaluator
+// handles is canonical at the top level, but the elements of a container
+// that came from the caller may still be other Go types (int64,
+// json.Number, structs, []string...). They are converted by norm when they
+// are taken out of their container (index, iteration), and the functions
+// that look inside containers directly (compare, equal, the encoder...)
+// convert what they meet through top. Canonical input, which is what
+// json.Unmarshal produces, is never walked or copied.
 
-// Normalize converts v into the value model the evaluator works with.
-// It accepts anything encoding/json can marshal. Values that are already
-// canonical are returned without copying.
+// Normalize converts v and everything inside it into the value model.
+// It accepts anything encoding/json can marshal. Parts that are already
+// canonical are shared, not copied. Queries do this on demand, so calling
+// it first is only useful to convert once and query many times.
 func Normalize(v any) (any, error) {
-	return normalize(v)
+	out, _, err := normalizeDeep(v)
+	return out, err
 }
 
-func normalize(v any) (any, error) {
-	switch x := v.(type) {
-	case nil, bool, string, int, float64:
-		return v, nil
+// normalizeDeep reports whether it had to build a new value.
+func normalizeDeep(v any) (any, bool, error) {
+	nv, err := norm(v)
+	if err != nil {
+		return nil, false, err
+	}
+	changed := !isCanonicalTop(v)
+	switch x := nv.(type) {
 	case []any:
-		if x == nil {
-			return nil, nil
-		}
 		var out []any
 		for i, e := range x {
-			ne, err := normalize(e)
+			ne, c, err := normalizeDeep(e)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			if out == nil && !sameValue(ne, e) {
-				out = make([]any, len(x))
-				copy(out, x[:i])
+			if c && out == nil {
+				out = cloneSlice(x, 0)
 			}
 			if out != nil {
 				out[i] = ne
 			}
 		}
 		if out != nil {
-			return out, nil
+			return out, true, nil
 		}
-		return x, nil
 	case map[string]any:
-		if x == nil {
-			return nil, nil
-		}
 		var out map[string]any
 		for k, e := range x {
-			ne, err := normalize(e)
+			ne, c, err := normalizeDeep(e)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			if out == nil && !sameValue(ne, e) {
-				out = make(map[string]any, len(x))
-				for k2, e2 := range x {
-					out[k2] = e2
-				}
+			if c && out == nil {
+				out = cloneMap(x, 0)
 			}
 			if out != nil {
 				out[k] = ne
 			}
 		}
 		if out != nil {
-			return out, nil
+			return out, true, nil
 		}
-		return x, nil
+	}
+	return nv, changed, nil
+}
+
+func isCanonicalTop(v any) bool {
+	switch x := v.(type) {
+	case nil, bool, string, int, float64:
+		return true
+	case []any:
+		return x != nil
+	case map[string]any:
+		return x != nil
+	}
+	return false
+}
+
+// norm converts the top level of v into the value model. It is free for
+// values that already are canonical.
+func norm(v any) (any, error) {
+	if isCanonicalTop(v) {
+		return v, nil
+	}
+	return normSlow(v)
+}
+
+// top is norm for places that cannot report an error; a value that cannot
+// be converted is returned unchanged and later reported as invalid.
+func top(v any) any {
+	if isCanonicalTop(v) {
+		return v
+	}
+	if nv, err := normSlow(v); err == nil {
+		return nv
+	}
+	return v
+}
+
+func normSlow(v any) (any, error) {
+	switch x := v.(type) {
+	case []any, map[string]any:
+		return nil, nil // typed nil container
 	case int8:
 		return int(x), nil
 	case int16:
@@ -115,11 +159,15 @@ func normalize(v any) (any, error) {
 	case error:
 		return nil, fmt.Errorf("jqgo: cannot use error value %q as input", x.Error())
 	}
-	// Anything else (structs, typed slices and maps, pointers...) goes
-	// through encoding/json, which is exactly what a caller would do by hand.
+	// Anything else (structs, typed slices and maps, pointers, custom
+	// string types...) goes through encoding/json, which is exactly what a
+	// caller would do by hand. The result is canonical all the way down.
 	rv := reflect.ValueOf(v)
-	if (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Interface) && rv.IsNil() {
-		return nil, nil
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface:
+		if rv.IsNil() {
+			return nil, nil
+		}
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -133,22 +181,6 @@ func uintValue(u uint64) any {
 		return int(u)
 	}
 	return float64(u)
-}
-
-// sameValue reports whether normalization left e untouched. Containers are
-// compared by identity, which is all normalize needs.
-func sameValue(a, b any) bool {
-	switch a := a.(type) {
-	case []any:
-		b, ok := b.([]any)
-		return ok && len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
-	case map[string]any:
-		b, ok := b.(map[string]any)
-		return ok && reflect.ValueOf(a).UnsafePointer() == reflect.ValueOf(b).UnsafePointer()
-	case nil, bool, int, float64, string:
-		return a == b
-	}
-	return false
 }
 
 func parseNumber(s string) (any, error) {
@@ -180,15 +212,23 @@ func typeName(v any) string {
 	case map[string]any:
 		return "object"
 	}
+	if nv := top(v); isCanonicalTop(nv) {
+		return typeName(nv)
+	}
 	return fmt.Sprintf("invalid(%T)", v)
 }
 
 func truthy(v any) bool {
-	switch v := v.(type) {
+	switch x := v.(type) {
 	case nil:
 		return false
 	case bool:
-		return v
+		return x
+	case int, float64, string, []any, map[string]any:
+		return true
+	}
+	if nv := top(v); isCanonicalTop(nv) {
+		return truthy(nv)
 	}
 	return true
 }
@@ -197,27 +237,42 @@ func isNumber(v any) bool {
 	switch v.(type) {
 	case int, float64:
 		return true
+	case nil, bool, string, []any, map[string]any:
+		return false
+	}
+	if nv := top(v); isCanonicalTop(nv) {
+		return isNumber(nv)
 	}
 	return false
 }
 
 func toFloat(v any) (float64, bool) {
-	switch v := v.(type) {
+	switch x := v.(type) {
 	case int:
-		return float64(v), true
+		return float64(x), true
 	case float64:
-		return v, true
+		return x, true
+	case nil, bool, string, []any, map[string]any:
+		return 0, false
+	}
+	if nv := top(v); isCanonicalTop(nv) {
+		return toFloat(nv)
 	}
 	return 0, false
 }
 
 // toInt truncates a number toward zero, clamping to the int range.
 func toInt(v any) (int, bool) {
-	switch v := v.(type) {
+	switch x := v.(type) {
 	case int:
-		return v, true
+		return x, true
 	case float64:
-		return floatToInt(v), true
+		return floatToInt(x), true
+	case nil, bool, string, []any, map[string]any:
+		return 0, false
+	}
+	if nv := top(v); isCanonicalTop(nv) {
+		return toInt(nv)
 	}
 	return 0, false
 }
@@ -262,11 +317,15 @@ func kindOrder(v any) int {
 	case map[string]any:
 		return 6
 	}
+	if nv := top(v); isCanonicalTop(nv) {
+		return kindOrder(nv)
+	}
 	return 7
 }
 
 // compare implements jq's total order over values.
 func compare(a, b any) int {
+	a, b = top(a), top(b)
 	ka, kb := kindOrder(a), kindOrder(b)
 	if ka != kb {
 		if ka < kb {
@@ -353,6 +412,7 @@ func compareNumbers(a, b any) int {
 }
 
 func equal(a, b any) bool {
+	a, b = top(a), top(b)
 	switch a := a.(type) {
 	case nil:
 		return b == nil

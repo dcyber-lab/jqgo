@@ -167,8 +167,8 @@ func repeatString(s string, n float64) (any, error) {
 func deepMerge(a, b map[string]any) map[string]any {
 	out := cloneMap(a, len(b))
 	for k, bv := range b {
-		if bm, ok := bv.(map[string]any); ok {
-			if am, ok := out[k].(map[string]any); ok {
+		if bm, ok := top(bv).(map[string]any); ok {
+			if am, ok := top(out[k]).(map[string]any); ok {
 				out[k] = deepMerge(am, bm)
 				continue
 			}

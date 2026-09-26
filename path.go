@@ -8,8 +8,10 @@ import (
 	"unsafe"
 )
 
-// index implements t[k] for every key kind jq supports.
+// index implements t[k] for every key kind jq supports. The element it
+// returns is normalized (see norm).
 func index(t, k any) (any, error) {
+	k = top(k)
 	switch t := t.(type) {
 	case nil:
 		switch k.(type) {
@@ -18,7 +20,7 @@ func index(t, k any) (any, error) {
 		}
 	case map[string]any:
 		if ks, ok := k.(string); ok {
-			return t[ks], nil
+			return norm(t[ks])
 		}
 	case []any:
 		switch k := k.(type) {
@@ -29,7 +31,7 @@ func index(t, k any) (any, error) {
 			if k < 0 || k >= len(t) {
 				return nil, nil
 			}
-			return t[k], nil
+			return norm(t[k])
 		case float64:
 			if math.IsNaN(k) {
 				return nil, nil
@@ -41,7 +43,7 @@ func index(t, k any) (any, error) {
 			if i < 0 || i >= len(t) {
 				return nil, nil
 			}
-			return t[i], nil
+			return norm(t[i])
 		case map[string]any:
 			start, end, err := sliceBounds(len(t), k)
 			if err != nil {
@@ -229,7 +231,11 @@ func setAt(v any, path []any, i int, x any, own ownSet) (any, error) {
 	if i == len(path) {
 		return x, nil
 	}
-	switch k := path[i].(type) {
+	v, err := norm(v)
+	if err != nil {
+		return nil, err
+	}
+	switch k := top(path[i]).(type) {
 	case string:
 		var m map[string]any
 		switch t := v.(type) {
@@ -345,6 +351,10 @@ func delPaths(v any, paths [][]any) (any, error) {
 			return nil, nil
 		}
 	}
+	v, err := norm(v)
+	if err != nil {
+		return nil, err
+	}
 	if v == nil || len(paths) == 0 {
 		return v, nil
 	}
@@ -353,7 +363,7 @@ func delPaths(v any, paths [][]any) (any, error) {
 		drop := map[string]bool{}
 		sub := map[string][][]any{}
 		for _, p := range paths {
-			k, ok := p[0].(string)
+			k, ok := top(p[0]).(string)
 			if !ok {
 				return nil, fmt.Errorf("Cannot delete field at %s index of object", typeName(p[0]))
 			}
@@ -388,7 +398,7 @@ func delPaths(v any, paths [][]any) (any, error) {
 		sub := map[int][][]any{}
 		var sliceEdits [][]any
 		for _, p := range paths {
-			switch k := p[0].(type) {
+			switch k := top(p[0]).(type) {
 			case int, float64:
 				idx, _ := toInt(k)
 				if f, ok := k.(float64); ok {
