@@ -110,14 +110,14 @@ func (p *pathT) extend(key any) (*pathT, error) {
 		return nil, nil
 	}
 	if p.invalid {
-		return nil, fmt.Errorf("Invalid path expression near attempt to access element %s of %s", dumpTrunc(key), dumpTrunc(p.value))
+		return nil, errPathAccess(key, p.value)
 	}
 	return &pathT{parent: p, key: key}, nil
 }
 
 func (p *pathT) toArray() ([]any, error) {
 	if p.invalid {
-		return nil, fmt.Errorf("Invalid path expression with result %s", dumpTrunc(p.value))
+		return nil, errPathResult(p.value)
 	}
 	n := 0
 	for x := p; x.parent != nil; x = x.parent {
@@ -317,7 +317,7 @@ func (e *evaluator) evalIndex(n *indexNode, env *envT, v any, p *pathT, out emit
 
 func indexEmit(t, k any, tp *pathT, out emitFunc) error {
 	if tp != nil && tp.invalid {
-		return fmt.Errorf("Invalid path expression near attempt to access element %s of %s", dumpTrunc(k), dumpTrunc(tp.value))
+		return errPathAccess(k, tp.value)
 	}
 	r, err := index(t, k)
 	if err != nil {
@@ -332,7 +332,7 @@ func (e *evaluator) evalSlice(n *sliceNode, env *envT, v any, p *pathT, out emit
 		return e.run(n.term, env, v, p, func(t any, tp *pathT) error {
 			key := map[string]any{"start": from, "end": to}
 			if tp != nil && tp.invalid {
-				return fmt.Errorf("Invalid path expression near attempt to access element %s of %s", dumpTrunc(key), dumpTrunc(tp.value))
+				return errPathAccess(key, tp.value)
 			}
 			r, err := index(t, key)
 			if err != nil {
@@ -356,7 +356,7 @@ func (e *evaluator) evalSlice(n *sliceNode, env *envT, v any, p *pathT, out emit
 
 func iterate(x any, xp *pathT, out emitFunc) error {
 	if xp != nil && xp.invalid {
-		return fmt.Errorf("Invalid path expression near attempt to iterate through %s", dumpTrunc(xp.value))
+		return errPathIterate(xp.value)
 	}
 	switch x := x.(type) {
 	case []any:
@@ -382,7 +382,7 @@ func iterate(x any, xp *pathT, out emitFunc) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("Cannot iterate over %s", typeDump(x))
+	return errIterate(x)
 }
 
 // recurseAll implements "..", i.e. recurse(.[]?).
@@ -614,7 +614,7 @@ func (e *evaluator) bindPattern(pat *pattern, env *envT, v any, k func(*envT) er
 	case 'a':
 		if v != nil {
 			if _, ok := v.([]any); !ok {
-				return fmt.Errorf("Cannot index %s with number", typeName(v))
+				return errIndex(v, 0)
 			}
 		}
 		var elems func(i int, env *envT) error
@@ -638,11 +638,11 @@ func (e *evaluator) bindPattern(pat *pattern, env *envT, v any, k func(*envT) er
 			withKey := func(key any) error {
 				ks, ok := key.(string)
 				if !ok {
-					return fmt.Errorf("Cannot index %s with %s", typeName(v), typeName(key))
+					return errIndex(v, key)
 				}
 				if v != nil {
 					if _, ok := v.(map[string]any); !ok {
-						return fmt.Errorf("Cannot index %s with string %q", typeName(v), ks)
+						return errIndex(v, ks)
 					}
 				}
 				x, _ := index(v, ks)

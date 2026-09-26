@@ -27,7 +27,7 @@ var regexCacheMu sync.Mutex
 func compileRegex(re any, flags any) (*compiledRegex, error) {
 	rs, ok := re.(string)
 	if !ok {
-		return nil, fmt.Errorf("%s cannot be matched, as it is not a string", typeDump(re))
+		return nil, errNotMatchable(re)
 	}
 	fs := ""
 	if flags != nil {
@@ -197,7 +197,7 @@ func matchObject(c *compiledRegex, s string, m []int, ro *runeOffsets) map[strin
 func matchImpl(e *evaluator, v any, args []any) (any, error) {
 	s, ok := v.(string)
 	if !ok {
-		return nil, fmt.Errorf("%s cannot be matched, as it is not a string", typeDump(v))
+		return nil, errNotMatchable(v)
 	}
 	c, err := compileRegex(args[0], args[1])
 	if err != nil {
@@ -221,7 +221,7 @@ func matchImpl(e *evaluator, v any, args []any) (any, error) {
 func splitRegex(e *evaluator, v any, args []any) (any, error) {
 	s, ok := v.(string)
 	if !ok {
-		return nil, fmt.Errorf("%s cannot be matched, as it is not a string", typeDump(v))
+		return nil, errNotMatchable(v)
 	}
 	flags := "g"
 	if args[1] != nil {
@@ -268,7 +268,7 @@ func subImpl(e *evaluator, n *callNode, env *envT, v any, p *pathT, out emitFunc
 		return e.evalArg(n, 2, env, v, func(flags any) error {
 			s, ok := v.(string)
 			if !ok {
-				return fmt.Errorf("%s cannot be matched, as it is not a string", typeDump(v))
+				return errNotMatchable(v)
 			}
 			c, err := compileRegex(re, flags)
 			if err != nil {

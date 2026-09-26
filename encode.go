@@ -333,21 +333,3 @@ func writeUEscape(b *bytes.Buffer, r rune) {
 	b.WriteByte(hexDigits[r>>4&0xf])
 	b.WriteByte(hexDigits[r&0xf])
 }
-
-// dumpTrunc renders v for an error message, cut to jq's 11 characters.
-func dumpTrunc(v any) string {
-	s := toJSON(v)
-	if len(s) > 14 {
-		cut := 11
-		for cut > 0 && !utf8.RuneStart(s[cut]) {
-			cut--
-		}
-		return s[:cut] + "..."
-	}
-	return s
-}
-
-// typeDump is the "type (value)" phrase jq uses in error messages.
-func typeDump(v any) string {
-	return typeName(v) + " (" + dumpTrunc(v) + ")"
-}

@@ -381,3 +381,18 @@ func TestEval(t *testing.T) {
 }
 
 var ioEOF = io.EOF
+
+func TestColors(t *testing.T) {
+	c, ok := ParseColors("0;31:0;32")
+	if !ok || c.Null != "0;31" || c.False != "0;32" || c.True != DefaultColors.True {
+		t.Fatalf("ParseColors: %+v %v", c, ok)
+	}
+	if _, ok := ParseColors("bad;x"); ok {
+		t.Fatal("expected an invalid spec")
+	}
+	got := string(MarshalWith(map[string]any{"a": []any{nil, 1}}, EncodeOptions{Colors: &DefaultColors}))
+	want := "\x1b[1;39m{\x1b[0m\x1b[34;1m\"a\"\x1b[0m\x1b[1;39m:\x1b[0m\x1b[1;39m[\x1b[0m\x1b[1;30mnull\x1b[0m\x1b[1;39m,\x1b[0m\x1b[0;39m1\x1b[0m\x1b[1;39m\x1b[1;39m]\x1b[0m\x1b[1;39m\x1b[1;39m}\x1b[0m"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+}

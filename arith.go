@@ -80,10 +80,6 @@ func add(l, r any) (any, error) {
 	return nil, opError(l, r, "added")
 }
 
-func opError(l, r any, verb string) error {
-	return fmt.Errorf("%s and %s cannot be %s", typeDump(l), typeDump(r), verb)
-}
-
 func subtract(l, r any) (any, error) {
 	switch a := l.(type) {
 	case int:

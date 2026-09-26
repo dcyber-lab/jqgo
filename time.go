@@ -433,3 +433,13 @@ func strptime(s, f string) (time.Time, error) {
 	}
 	return time.Date(year, time.Month(month), day, hour, min, sec, 0, time.UTC), nil
 }
+
+func registerTime() {
+	defFn("now", 0, func(*evaluator, any, []any) (any, error) { return nowFloat(), nil })
+	defFn("mktime", 0, mktime)
+	defFn("gmtime", 0, func(e *evaluator, v any, _ []any) (any, error) { return brokenDown(v, false) })
+	defFn("localtime", 0, func(e *evaluator, v any, _ []any) (any, error) { return brokenDown(v, true) })
+	defFn("strftime", 1, func(e *evaluator, v any, args []any) (any, error) { return strftimeFn(v, args[0], false) })
+	defFn("strflocaltime", 1, func(e *evaluator, v any, args []any) (any, error) { return strftimeFn(v, args[0], true) })
+	defFn("strptime", 1, strptimeFn)
+}

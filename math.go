@@ -41,7 +41,7 @@ func registerMath() {
 		defFn(name, 0, func(e *evaluator, v any, _ []any) (any, error) {
 			x, ok := toFloat(v)
 			if !ok {
-				return nil, fmt.Errorf("%s number required", typeDump(v))
+				return nil, errNumberRequired(v)
 			}
 			return f(x), nil
 		})
@@ -64,7 +64,7 @@ func registerMath() {
 				}
 				return intIfExact(r), nil
 			}
-			return nil, fmt.Errorf("%s number required", typeDump(v))
+			return nil, errNumberRequired(v)
 		})
 	}
 	binary := map[string]func(float64, float64) float64{
@@ -106,7 +106,7 @@ func registerMath() {
 	defFn("frexp", 0, func(e *evaluator, v any, _ []any) (any, error) {
 		x, ok := toFloat(v)
 		if !ok {
-			return nil, fmt.Errorf("%s number required", typeDump(v))
+			return nil, errNumberRequired(v)
 		}
 		f, exp := math.Frexp(x)
 		return []any{f, exp}, nil
@@ -114,7 +114,7 @@ func registerMath() {
 	defFn("modf", 0, func(e *evaluator, v any, _ []any) (any, error) {
 		x, ok := toFloat(v)
 		if !ok {
-			return nil, fmt.Errorf("%s number required", typeDump(v))
+			return nil, errNumberRequired(v)
 		}
 		i, f := math.Modf(x)
 		return []any{f, i}, nil

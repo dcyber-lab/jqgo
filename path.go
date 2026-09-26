@@ -61,9 +61,9 @@ func index(t, k any) (any, error) {
 		}
 	}
 	if ks, ok := k.(string); ok {
-		return nil, fmt.Errorf("Cannot index %s with string %q", typeName(t), ks)
+		return nil, errIndex(t, ks)
 	}
-	return nil, fmt.Errorf("Cannot index %s with %s", typeName(t), typeName(k))
+	return nil, errIndex(t, k)
 }
 
 // sliceBounds resolves a {"start","end"} slice key against a length.
@@ -244,7 +244,7 @@ func setAt(v any, path []any, i int, x any, own ownSet) (any, error) {
 				own.add(m)
 			}
 		default:
-			return nil, fmt.Errorf("Cannot index %s with string %q", typeName(v), k)
+			return nil, errIndex(v, k)
 		}
 		child, err := setAt(m[k], path, i+1, x, own)
 		if err != nil {
@@ -259,7 +259,7 @@ func setAt(v any, path []any, i int, x any, own ownSet) (any, error) {
 		case []any:
 			arr = t
 		default:
-			return nil, fmt.Errorf("Cannot index %s with number", typeName(v))
+			return nil, errIndex(v, 0)
 		}
 		idx, _ := toInt(k)
 		if f, ok := k.(float64); ok {
@@ -332,7 +332,7 @@ func setAt(v any, path []any, i int, x any, own ownSet) (any, error) {
 		}
 	}
 	if ks, ok := path[i].(string); ok {
-		return nil, fmt.Errorf("Cannot index %s with string %q", typeName(v), ks)
+		return nil, errIndex(v, ks)
 	}
 	return nil, fmt.Errorf("Cannot update field at %s index of %s", typeName(path[i]), typeName(v))
 }
@@ -449,7 +449,7 @@ func delSequential(v any, paths [][]any) (any, error) {
 	sorted := make([][]any, len(paths))
 	copy(sorted, paths)
 	sort.SliceStable(sorted, func(i, j int) bool {
-		return compare(toAnySlice(sorted[i]), toAnySlice(sorted[j])) > 0
+		return compare(any(sorted[i]), any(sorted[j])) > 0
 	})
 	for _, p := range sorted {
 		var err error
@@ -459,8 +459,6 @@ func delSequential(v any, paths [][]any) (any, error) {
 	}
 	return v, nil
 }
-
-func toAnySlice(p []any) any { return p }
 
 func delOne(v any, p []any) (any, error) {
 	if len(p) == 1 {
