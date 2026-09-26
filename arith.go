@@ -158,6 +158,9 @@ func repeatString(s string, n float64) (any, error) {
 	if n < 0 || math.IsNaN(n) {
 		return nil, nil
 	}
+	if s == "" {
+		return "", nil // also for n = +Inf, where n*len(s) would be NaN
+	}
 	if n*float64(len(s)) > 1<<27 {
 		return nil, fmt.Errorf("Repeat string result too long")
 	}

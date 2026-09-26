@@ -1066,3 +1066,12 @@ null
 try erf catch .
 "a"
 "string (\"a\") number required"
+
+# string repetition edge cases (found by fuzzing)
+[("" * (infinite, 1e300)), (infinite * "")]
+null
+["","",""]
+
+[.[] | try ("ab" * .) catch .]
+[1e1000, 1e10, -1]
+["Repeat string result too long","Repeat string result too long",null]
