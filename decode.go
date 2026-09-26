@@ -71,26 +71,95 @@ func parseJSON(b []byte) (any, error) {
 
 // Decode returns the next value, or io.EOF when the stream is exhausted.
 func (d *Decoder) Decode() (any, error) {
-	if !d.started {
-		d.started = true
-		// Only wait for three bytes when the first could start a BOM, so an
-		// interactive stream is not held up.
-		if d.ensure(1); d.pos < d.end && d.buf[d.pos] == 0xEF {
-			d.ensure(3)
-			if d.end-d.pos >= 3 && string(d.buf[d.pos:d.pos+3]) == "\xef\xbb\xbf" {
-				d.pos += 3
-			}
-		}
+	c, err := d.start()
+	if err != nil {
+		return nil, err
 	}
-	c, ok := d.skipSpace()
+	return d.value(c)
+}
+
+// start consumes and returns the first byte of the next top-level value.
+func (d *Decoder) start() (byte, error) {
+	c, ok := d.skipSpaceAfterBOM()
 	if !ok {
 		if d.rerr != nil {
-			return nil, d.rerr
+			return 0, d.rerr
 		}
-		return nil, io.EOF
+		return 0, io.EOF
 	}
 	d.pos++
-	return d.value(c)
+	return c, nil
+}
+
+// skip consumes a value whose first byte c was already consumed, checking
+// its syntax but building nothing.
+func (d *Decoder) skip(c byte) error {
+	switch c {
+	case '{':
+		c, err := d.next()
+		if err != nil || c == '}' {
+			return err
+		}
+		for {
+			if c != '"' {
+				return d.errorf("Object keys must be strings")
+			}
+			if _, err := d.strBytes(); err != nil {
+				return err
+			}
+			if c, err = d.next(); err != nil {
+				return err
+			}
+			if c != ':' {
+				return d.errorf("Objects must consist of key:value pairs")
+			}
+			if c, err = d.next(); err != nil {
+				return err
+			}
+			if err := d.skip(c); err != nil {
+				return err
+			}
+			if c, err = d.next(); err != nil {
+				return err
+			}
+			if c == '}' {
+				return nil
+			}
+			if c != ',' {
+				return d.errorf("Expected separator between values")
+			}
+			if c, err = d.next(); err != nil {
+				return err
+			}
+		}
+	case '[':
+		c, err := d.next()
+		if err != nil || c == ']' {
+			return err
+		}
+		for {
+			if err := d.skip(c); err != nil {
+				return err
+			}
+			if c, err = d.next(); err != nil {
+				return err
+			}
+			if c == ']' {
+				return nil
+			}
+			if c != ',' {
+				return d.errorf("Expected separator between values")
+			}
+			if c, err = d.next(); err != nil {
+				return err
+			}
+		}
+	case '"':
+		_, err := d.strBytes()
+		return err
+	}
+	_, err := d.value(c)
+	return err
 }
 
 func (d *Decoder) errorf(format string, args ...any) error {
@@ -137,6 +206,23 @@ func (d *Decoder) ensure(n int) {
 			return
 		}
 	}
+}
+
+// skipSpaceAfterBOM is skipSpace, dropping a byte order mark at the very
+// start of the stream.
+func (d *Decoder) skipSpaceAfterBOM() (byte, bool) {
+	if !d.started {
+		d.started = true
+		// Only wait for three bytes when the first could start a BOM, so an
+		// interactive stream is not held up.
+		if d.ensure(1); d.pos < d.end && d.buf[d.pos] == 0xEF {
+			d.ensure(3)
+			if d.end-d.pos >= 3 && string(d.buf[d.pos:d.pos+3]) == "\xef\xbb\xbf" {
+				d.pos += 3
+			}
+		}
+	}
+	return d.skipSpace()
 }
 
 // skipSpace returns the next non-space byte without consuming it.

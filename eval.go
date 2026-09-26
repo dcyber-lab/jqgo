@@ -190,6 +190,14 @@ func (e *evaluator) dispatch(n node, env *envT, v any, p *pathT, out emitFunc) e
 		return e.run(n.term, env, v, p, func(x any, xp *pathT) error {
 			return e.iterate(x, xp, out)
 		})
+	case *streamNode:
+		if e.stream == nil {
+			return e.run(n.orig, env, v, p, out)
+		}
+		if p != nil {
+			return errors.New("jqgo: internal error: streamed input used as a path")
+		}
+		return e.stream.run(e, n, out)
 	case *sliceNode:
 		return e.evalSlice(n, env, v, p, out)
 	case recurseAllNode:

@@ -52,6 +52,8 @@ Requires Go 1.23 or newer.
 | `q.All(ctx, input, vars...)` | Collect every result. |
 | `q.First(ctx, input, vars...)` | First result only. Returns `ErrNoResult` if there is none. |
 | `q.RunWithInputs(ctx, input, inputs, vars...)` | Supply the stream behind `input` / `inputs`. |
+| `q.RunReader(ctx, r, vars...)` | Run on every JSON value read from `r`, like the CLI. Streams large values (see below). |
+| `q.Streamable()` | Whether `RunReader` can process a value without loading it whole. |
 | `Eval(ctx, src, input)` | Compile and run in one call. |
 | `Marshal(v)` / `MarshalWith(v, EncodeOptions)` | Encode a value the way jq prints it. |
 | `NewEncoder(w, EncodeOptions)` | Same, streamed to an `io.Writer` without building the text in memory. |
@@ -100,6 +102,36 @@ Things to know when embedding:
   the context regularly, and runaway recursion becomes an error instead of
   crashing the process. Memory use is not limited, so run truly hostile
   queries out of process.
+
+## Large inputs
+
+`RunReader` parses its input as it goes. When the query only reads its
+input through one iteration such as `.[]` or `.items[]`, the iterated
+elements are handed to the rest of the query as they are parsed and
+everything else is skipped without being built, so a multi-gigabyte array
+takes about as much memory as one element:
+
+```go
+q := jqgo.MustCompile(`.items[] | select(.price > 100) | .id`)
+f, _ := os.Open("huge.json")
+for v, err := range q.RunReader(ctx, f) { ... }
+```
+
+`q.Streamable()` tells you whether this applies. Queries like
+`[.[] | .x] | add`, `reduce .rows[] as $r (...)`, `first(.[])` and
+`limit(10; .items[])` qualify; ones that also use `.` elsewhere, index by
+a variable, or call `input` do not, and get each value decoded whole, as
+with `Run`. The CLI does this automatically.
+
+On a 200 MB array of 1.5M records (`jqgo -c '.[] | select(...) | .name'`):
+
+| | time | peak memory |
+| --- | --- | --- |
+| jq 1.7 | 13.2 s | 3.2 GB |
+| jqgo, whole document | 4.9 s | 2.2 GB |
+| jqgo, streamed | 4.6 s | 13 MB |
+
+`first(.[])` on the same file takes 0.8 s: the rest is only scanned.
 
 ## CLI
 
@@ -170,6 +202,9 @@ Against jq 1.7:
   Backreferences and lookaround do not, and `\b` is ASCII-only.
 - **`$__loc__`** reports the line only (the file is always `<top-level>`).
 - `input_line_number` always returns 0.
+- When a value is streamed (see Large inputs), results can come before a
+  syntax error later in that value, and of duplicate keys on the streamed
+  path the first is used rather than the last.
 - A few builtins from later jq releases are available too: `toarray`,
   `trim`, `ltrim`, `rtrim` and `add(f)`.
 

@@ -38,6 +38,7 @@ type Query struct {
 	custom  map[string]*globalFunc
 	environ map[string]any
 	debug   io.Writer
+	stream  *streamNode // nil unless Streamable
 }
 
 type config struct {
@@ -139,11 +140,12 @@ func Compile(src string, opts ...Option) (*Query, error) {
 		return nil, &CompileError{Query: src, Err: err}
 	}
 	markSimple(root)
+	stream := analyzeStream(&root)
 	env := cfg.environ
 	if env == nil {
 		env = map[string]any{}
 	}
-	return &Query{src: src, root: root, vars: cfg.vars, custom: cfg.custom, environ: env, debug: cfg.debug}, nil
+	return &Query{src: src, root: root, vars: cfg.vars, custom: cfg.custom, environ: env, debug: cfg.debug, stream: stream}, nil
 }
 
 // MustCompile is like Compile but panics on error.
@@ -173,8 +175,9 @@ func (q *Query) RunWithInputs(ctx context.Context, input any, inputs Inputs, var
 // evalOptions turn optimisations off, so tests can check that they never
 // change a result.
 type evalOptions struct {
-	copyOnly   bool // no in-place updates (see ownSet)
-	noFastPath bool // no eval1 for simple expressions
+	copyOnly   bool          // no in-place updates (see ownSet)
+	noFastPath bool          // no eval1 for simple expressions
+	stream     *streamSource // input comes from here (see stream.go)
 }
 
 func (q *Query) exec(ctx context.Context, input any, inputs Inputs, opts evalOptions, vars []any) iter.Seq2[any, error] {

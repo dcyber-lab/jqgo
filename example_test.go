@@ -81,3 +81,21 @@ func ExampleValueError() {
 	}
 	// Output: 404
 }
+
+func ExampleQuery_RunReader() {
+	// Any io.Reader: a file, an HTTP body... Only the elements of .items
+	// are built, one at a time.
+	r := strings.NewReader(`{"total": 3, "items": [{"id": 1, "ok": true}, {"id": 2}, {"id": 3, "ok": true}]}`)
+	q := jqgo.MustCompile(`.items[] | select(.ok) | .id`)
+	fmt.Println("streamable:", q.Streamable())
+	for v, err := range q.RunReader(context.Background(), r) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(v)
+	}
+	// Output:
+	// streamable: true
+	// 1
+	// 3
+}

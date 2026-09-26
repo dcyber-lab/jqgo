@@ -119,6 +119,27 @@ func (s *inputStream) Next() (any, error) {
 	}
 }
 
+// sources calls f with each input in turn (stdin when there are no
+// files), for Query.RunReader. Files that cannot be opened are reported
+// and skipped, as with Next.
+func (s *inputStream) sources(f func(r io.Reader) bool) {
+	if s.next < 0 {
+		s.dec = nil
+		f(struct{ io.Reader }{s.stdin}) // hides os.Stdin's Name: input_filename is null
+		return
+	}
+	for s.advance() {
+		s.dec = nil
+		if !f(s.f) { // *os.File: RunReader takes input_filename from its Name
+			break
+		}
+	}
+	if s.f != nil {
+		s.f.Close()
+		s.f = nil
+	}
+}
+
 // Filename implements input_filename.
 func (s *inputStream) Filename() any {
 	if s.name == "" || s.name == "<stdin>" {

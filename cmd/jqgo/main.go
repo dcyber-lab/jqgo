@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"os/signal"
 	"strconv"
@@ -124,9 +125,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var last any
 	produced := false
 
-	process := func(v any) bool {
-		for r, err := range q.RunWithInputs(ctx, v, in, values...) {
+	// consume writes the results of one input, or of a whole source when
+	// streaming (fatal is then set, and tells input errors apart); it
+	// reports false when processing must stop.
+	consume := func(results iter.Seq2[any, error], fatal func(error) bool) bool {
+		streamed := fatal != nil
+		for r, err := range results {
 			if err != nil {
+				if fatal != nil && fatal(err) {
+					out.Flush()
+					fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(), err)
+					exit = 2
+					return false
+				}
 				var halt *jqgo.HaltError
 				if errors.As(err, &halt) {
 					out.Flush()
@@ -147,6 +158,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				}
 				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(), err)
 				exit = 5
+				if streamed {
+					continue // RunReader goes on with the next value
+				}
 				return true
 			}
 			produced, last = true, r
@@ -154,7 +168,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				out.Flush()
 				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(), err)
 				exit = 5
+				if streamed {
+					continue
+				}
 				return true
+			}
+			if streamed && flushEach {
+				out.Flush()
 			}
 		}
 		// Flushing after every input costs a write per record; jq only does
@@ -164,8 +184,27 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return true
 	}
+	process := func(v any) bool {
+		return consume(q.RunWithInputs(ctx, v, in, values...), nil)
+	}
 
-	if opts.nullInput {
+	// A query that only iterates over its input (.[], .items[] ...) is
+	// run while the input is parsed, so a huge array is never held whole.
+	streaming := q.Streamable() && !opts.nullInput && !opts.slurp && !opts.rawInput && !opts.seq
+	if streaming {
+		in.sources(func(r io.Reader) bool {
+			rec := &errReader{r: r}
+			fatal := func(err error) bool {
+				var se *jqgo.SyntaxError
+				return errors.As(err, &se) || (rec.err != nil && err == rec.err)
+			}
+			var src io.Reader = rec
+			if f, ok := r.(interface{ Name() string }); ok {
+				src = namedReader{rec, f.Name()}
+			}
+			return consume(q.RunReader(ctx, src, values...), fatal)
+		})
+	} else if opts.nullInput {
 		process(nil)
 	} else if opts.slurp {
 		v, err := in.slurp()
@@ -192,8 +231,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	if in.err != nil && exit == 0 {
-		fmt.Fprintf(stderr, "jqgo: error: %s\n", in.err)
-		exit = 2
+		exit = 2 // already reported
 	}
 	if exit == 0 && opts.exitStatus {
 		switch {
@@ -463,3 +501,26 @@ func parseJSONArg(s string) (any, error) {
 	}
 	return v, nil
 }
+
+// errReader remembers the error its reader returned, to tell read errors
+// from runtime errors.
+type errReader struct {
+	r   io.Reader
+	err error
+}
+
+func (e *errReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err != nil && err != io.EOF {
+		e.err = err
+	}
+	return n, err
+}
+
+// namedReader passes a file name on to input_filename.
+type namedReader struct {
+	io.Reader
+	name string
+}
+
+func (n namedReader) Name() string { return n.name }

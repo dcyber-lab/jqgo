@@ -25,6 +25,23 @@ func decodeAll(d *Decoder) (vals []string, errText string) {
 	}
 }
 
+func skipAll(d *Decoder) (int, string) {
+	n := 0
+	for {
+		c, err := d.start()
+		if err == io.EOF {
+			return n, ""
+		}
+		if err == nil {
+			err = d.skip(c)
+		}
+		if err != nil {
+			return n, err.Error()
+		}
+		n++
+	}
+}
+
 func checkDecode(t *testing.T, data []byte) {
 	// The same stream read in one piece and one byte at a time: token
 	// boundaries fall on buffer boundaries in the second case.
@@ -32,6 +49,12 @@ func checkDecode(t *testing.T, data []byte) {
 	bytewise, berr := decodeAll(NewDecoder(iotest.OneByteReader(bytes.NewReader(data))))
 	if strings.Join(whole, "\n") != strings.Join(bytewise, "\n") || (werr == "") != (berr == "") {
 		t.Fatalf("%q:\n whole:    %v %q\n bytewise: %v %q", data, whole, werr, bytewise, berr)
+	}
+	// Skipping (used when streaming) accepts exactly what decoding does,
+	// and stops at the same place.
+	skipped, serr := skipAll(NewDecoder(iotest.OneByteReader(bytes.NewReader(data))))
+	if skipped != len(whole) || (werr == "") != (serr == "") {
+		t.Fatalf("%q: skipped %d values %q, decoded %d %q", data, skipped, serr, len(whole), werr)
 	}
 	// Whatever encoding/json accepts must decode to the same value. (It
 	// replaces invalid UTF-8 byte by byte; jqgo follows jq, see

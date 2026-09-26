@@ -177,6 +177,39 @@ Tests).
 Error messages that match jq's wording live in `errors.go`; they are part
 of the compatibility surface.
 
+## Streaming large inputs
+
+`stream.go`. `RunReader` can evaluate a query while its input is being
+parsed, so `.items[] | ...` over a multi-gigabyte document holds one
+element at a time instead of the whole tree.
+
+- **Analysis, at compile time.** `analyzeStream` looks for the one place
+  the query reads its input: a `PATH[]` where PATH is literal field names
+  (`.[]`, `.a.b[]`, `.["k"][]`), reached from the root through nodes that
+  evaluate that branch at most once with the query's input (left side of
+  `|`, `[...]`, `reduce`/`foreach` source with a simple input-free init,
+  `try` body, `label`, `first`/`isempty`/`limit` with a constant count,
+  one side of `,` when the other ignores its input). If found, that
+  `iterateNode` is replaced by a `streamNode`. Anything else, including
+  `input`/`inputs` anywhere, leaves the query non-streamable.
+- **Evaluation.** A `streamNode` is transparent to `Run`: without
+  `evalOptions.stream` it just runs the original iteration. With it, the
+  node pulls from the `Decoder`: it walks the path (skipping other keys
+  with `Decoder.skip`, which validates without building), then decodes and
+  emits array elements one by one. Object iteration still decodes the
+  object whole, since values come out in key order.
+- **The rest of the value is always consumed** when the query stops by
+  itself (`first`, `limit`, an error, `break`), because the next top-level
+  value follows it. It is not consumed when the caller stops iterating, on
+  `halt`, or on cancellation.
+- **Differences** that cannot be avoided: results can come before a
+  syntax error later in the same value, and with duplicate keys on the
+  path the first is streamed (a decoded object keeps the last).
+
+`TestStreamSuite` and `FuzzStream` compare `RunReader` (whole and one byte
+at a time) against `Run` on every suite case; `TestStreamMemory` checks
+the heap stays small on a generated 200 MB input.
+
 ## Safety when embedded
 
 - `tick` checks the context every 1024 units of work. It is called from
@@ -198,6 +231,7 @@ of the compatibility surface.
 | Same suites with non-canonical Go inputs | `TestJQSuiteLooseInput` |
 | In-place updates vs copying | `inplace_test.go` (`TestInPlaceEquivalence`, `FuzzInPlace`) |
 | Fast path vs general evaluator | `TestFastPathSuite`, `FuzzFastPath` |
+| Streaming vs Run; memory on a 200 MB input | `stream_test.go` (`TestStreamSuite`, `FuzzStream`, `TestStreamMemory`) |
 | Decoder: whole vs byte-at-a-time, vs encoding/json | `decode_test.go`, `FuzzDecode` |
 | No panics or hangs on arbitrary programs | `FuzzQuery` |
 | Library API and CLI behaviour | `api_test.go`, `cmd/jqgo/main_test.go` |

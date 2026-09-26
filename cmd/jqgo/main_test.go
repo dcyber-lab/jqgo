@@ -28,6 +28,9 @@ func TestCLI(t *testing.T) {
 	f2 := write("b.json", `[3]`)
 	prog := write("prog.jq", `.a + $x`)
 	raw := write("raw.txt", "line1\nline2\n")
+	items1 := write("i1.json", `{"items":[1,2]}`)
+	items2 := write("i2.json", `{"items":[3]}`)
+	missing := filepath.Join(dir, "missing.json")
 
 	tests := []struct {
 		name  string
@@ -77,6 +80,15 @@ func TestCLI(t *testing.T) {
 		{"raw output0", ``, []string{"-n", "--raw-output0", `"a", 1, [2]`}, "a\x001\x00[\n  2\n]\x00", 0},
 		{"raw output0 rejects NUL", ``, []string{"-n", "--raw-output0", `"ok", "a\u0000b", "never"`}, "ok\x00", 5},
 		{"unbuffered", "1 2", []string{"--unbuffered", "-c", "."}, "1\n2\n", 0},
+		// Queries that only iterate over their input are streamed.
+		{"streamed", `{"items":[{"a":1},{"a":2}]} {"items":[]}`, []string{"-c", ".items[] | .a"}, "1\n2\n", 0},
+		{"streamed runtime error continues", `[1,"x",3] [4]`, []string{".[] | .+1"}, "2\n5\n", 5},
+		{"streamed syntax error", `[1,2] [3`, []string{"-c", ".[]"}, "1\n2\n3\n", 2},
+		{"streamed halt", `[1,2,3] [4]`, []string{".[] | if . == 2 then halt else . end"}, "1\n", 0},
+		{"streamed first", `[1,2,3] [4]`, []string{"first(.[])"}, "1\n4\n", 0},
+		{"streamed input_filename", ``, []string{"-c", ".items[] | [., input_filename]", items1, items2}, "[1,\"" + items1 + "\"]\n[2,\"" + items1 + "\"]\n[3,\"" + items2 + "\"]\n", 0},
+		{"streamed stdin filename", `[1]`, []string{".[] | input_filename"}, "null\n", 0},
+		{"streamed missing file", ``, []string{".items[]", missing, items2}, "3\n", 2},
 		{"help", ``, []string{"--help"}, usage, 0},
 		{"unknown option", ``, []string{"--nope", "."}, "", 2},
 		{"missing filter", ``, []string{}, "", 2},
