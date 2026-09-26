@@ -406,6 +406,34 @@ func TestEval(t *testing.T) {
 
 var ioEOF = io.EOF
 
+func TestMarshalInvalidUTF8(t *testing.T) {
+	// A Go string from the caller can hold invalid UTF-8; it is printed as
+	// U+FFFD, escaped with -a.
+	if got := string(Marshal("a\xffb")); got != "\"a\ufffdb\"" {
+		t.Errorf("got %q", got)
+	}
+	if got := string(MarshalWith("a\xffb\u00e9", EncodeOptions{ASCII: true})); got != `"a\ufffdb\u00e9"` {
+		t.Errorf("ASCII: got %q", got)
+	}
+}
+
+func TestEncoder(t *testing.T) {
+	var b strings.Builder
+	enc := NewEncoder(&b, EncodeOptions{Indent: 1})
+	big := benchRecords(2000) // larger than the flush threshold
+	for _, v := range []any{map[string]any{"a": 1}, big} {
+		if err := enc.Encode(v); err != nil {
+			t.Fatal(err)
+		}
+		b.WriteByte('\n')
+	}
+	want := string(MarshalWith(map[string]any{"a": 1}, EncodeOptions{Indent: 1})) + "\n" +
+		string(MarshalWith(big, EncodeOptions{Indent: 1})) + "\n"
+	if b.String() != want {
+		t.Fatal("streamed output differs from MarshalWith")
+	}
+}
+
 func TestColors(t *testing.T) {
 	c, ok := ParseColors("0;31:0;32")
 	if !ok || c.Null != "0;31" || c.False != "0;32" || c.True != DefaultColors.True {

@@ -54,6 +54,7 @@ Requires Go 1.23 or newer.
 | `q.RunWithInputs(ctx, input, inputs, vars...)` | Supply the stream behind `input` / `inputs`. |
 | `Eval(ctx, src, input)` | Compile and run in one call. |
 | `Marshal(v)` / `MarshalWith(v, EncodeOptions)` | Encode a value the way jq prints it. |
+| `NewEncoder(w, EncodeOptions)` | Same, streamed to an `io.Writer` without building the text in memory. |
 | `NewDecoder(r)` | Read a stream of JSON values (ints stay ints). |
 
 Options:
@@ -134,6 +135,10 @@ checking that both give the same results. On the machine where
 | `reduce .[] as $x ({}; .[$x.addr.city] += 1)` | 9.2 ms | 63.7 ms |
 | `INDEX(.id)` | 16 ms | 2.7 s |
 | one small document | 1.4 µs | 2.0 µs |
+
+The CLI against jq 1.7 on a 24 MB file of 200,000 records, best of three
+runs, with byte-identical output: jqgo was 1.5–2.7× faster on every query
+tried, including plain pretty-printing (`.`: 0.59 s vs 0.99 s).
 
 Updates such as `reduce`, `|=` and `INDEX` stay linear because jqgo
 modifies containers it allocated itself in place (see

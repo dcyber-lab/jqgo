@@ -117,6 +117,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	in := newInputStream(opts, stdin, stderr)
+	encoder := jqgo.NewEncoder(out, enc)
 	exit := 0
 	var last any
 	produced := false
@@ -147,7 +148,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return true
 			}
 			produced, last = true, r
-			if err := writeValue(out, r, opts, enc); err != nil {
+			if err := writeValue(out, encoder, r, opts); err != nil {
 				out.Flush()
 				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(), err)
 				exit = 5
@@ -199,7 +200,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return exit
 }
 
-func writeValue(w *bufio.Writer, v any, opts options, enc jqgo.EncodeOptions) error {
+func writeValue(w *bufio.Writer, enc *jqgo.Encoder, v any, opts options) error {
 	if s, ok := v.(string); ok && (opts.rawOutput || opts.joinOutput || opts.rawOutput0) {
 		if opts.rawOutput0 && strings.IndexByte(s, 0) >= 0 {
 			return errors.New("Cannot dump a string containing NUL with --raw-output0 option")
@@ -209,7 +210,9 @@ func writeValue(w *bufio.Writer, v any, opts options, enc jqgo.EncodeOptions) er
 		if opts.seq {
 			w.WriteByte(0x1e) // RFC 7464 record separator; jq omits it for raw strings
 		}
-		w.Write(jqgo.MarshalWith(v, enc))
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
 	}
 	switch {
 	case opts.rawOutput0:
