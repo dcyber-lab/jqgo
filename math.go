@@ -28,6 +28,7 @@ func registerMath() {
 		"asinh": math.Asinh, "acosh": math.Acosh, "atanh": math.Atanh,
 		"fabs": math.Abs, "gamma": lgamma, "lgamma": lgamma, "tgamma": math.Gamma,
 		"lgamma_r": lgamma, "j0": math.J0, "j1": math.J1, "y0": math.Y0, "y1": math.Y1,
+		"erf": math.Erf, "erfc": math.Erfc,
 		"significand": func(x float64) float64 {
 			if x == 0 || math.IsInf(x, 0) || math.IsNaN(x) {
 				return x
@@ -71,6 +72,9 @@ func registerMath() {
 		"pow": math.Pow, "atan2": math.Atan2, "fmin": math.Min, "fmax": math.Max,
 		"fmod": math.Mod, "copysign": math.Copysign, "drem": math.Remainder,
 		"nextafter": math.Nextafter, "fdim": math.Dim, "hypot": math.Hypot,
+		"nexttoward": math.Nextafter, "remainder": math.Remainder,
+		"jn":      func(n, x float64) float64 { return math.Jn(int(n), x) },
+		"yn":      func(n, x float64) float64 { return math.Yn(int(n), x) },
 		"ldexp":   func(a, b float64) float64 { return math.Ldexp(a, int(b)) },
 		"scalb":   func(a, b float64) float64 { return a * math.Pow(2, b) },
 		"scalbln": func(a, b float64) float64 { return math.Ldexp(a, int(b)) },

@@ -7,6 +7,7 @@ def arrays: select(type == "array");
 def objects: select(type == "object");
 def iterables: select(type|. == "array" or . == "object");
 def scalars: select(type|. != "array" and . != "object");
+def isfinite: type == "number" and (isinfinite | not);
 def finites: select(isinfinite or isnan | not);
 def normals: select(isnormal);
 

@@ -109,10 +109,11 @@ jqgo -r '.[] | [.id, .name] | @tsv' users.json
 ```
 
 Supported flags: `-n -r -j -a -c -s -e -R -C -M -S -f --tab --indent n
---arg --argjson --slurpfile --rawfile --args --jsonargs`, plus the
-`JQ_COLORS` and `NO_COLOR` environment variables. Exit codes follow jq:
-2 for usage or input errors, 3 for compile errors, 5 for runtime errors, and
-`-e` semantics. `--stream`, `--seq` and `-L`/modules are not implemented.
+--raw-output0 --seq --arg --argjson --slurpfile --rawfile --args
+--jsonargs`, plus the `JQ_COLORS` and `NO_COLOR` environment variables.
+Exit codes follow jq: 2 for usage or input errors, 3 for compile errors, 5
+for runtime errors, and `-e` semantics. `--stream`, `--stream-errors` and
+`-L` (modules) are not implemented.
 
 
 
@@ -138,6 +139,19 @@ Updates such as `reduce`, `|=` and `INDEX` stay linear because jqgo
 modifies containers it allocated itself in place (see
 [DESIGN.md](DESIGN.md)). Rerun `bench/` on your own hardware before
 relying on these numbers.
+
+## Coverage
+
+Against jq 1.7:
+
+- **Builtins:** 214 of jq's 218. The four missing ones (`modulemeta`,
+  `get_search_list`, `get_jq_origin`, `get_prog_origin`) belong to the
+  module system. jqgo also has a few builtins from other jq versions (see
+  below).
+- **jq's own test suites:** 685 of 711 cases pass. The 26 skipped cases
+  are the deliberate differences listed next.
+- **CLI flags:** all but `--stream`, `--stream-errors`, `-L` and
+  `--build-configuration`.
 
 ## Differences from jq 1.7.1
 

@@ -1041,3 +1041,28 @@ false
 [.[] | try contains(false) catch "error"]
 [true,false]
 ["error",true]
+
+# math builtins added to match jq 1.7's builtins list
+[erf, erfc, isfinite]
+0.5
+[0.5204998778130465,0.4795001221869535,true]
+
+[.[] | isfinite]
+[1, "a", null, 1e1000]
+[true,false,false,false]
+
+[(1,2) as $a | jn($a; 1)]
+null
+[0.4400505857449335,0.11490348493190049]
+
+[jn(1,2; 3,4)]
+null
+[0.33905895852593637,0.4860912605858911,-0.06604332802354915,0.3641281458520728]
+
+[yn(1;2), nexttoward(1;2), remainder(5;3), remainder(5.5;2)]
+null
+[-0.10703243154093756,1.0000000000000002,-1,-0.5]
+
+try erf catch .
+"a"
+"string (\"a\") number required"

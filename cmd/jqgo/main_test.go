@@ -71,6 +71,11 @@ func TestCLI(t *testing.T) {
 		{"halt", ``, []string{"-n", "1, halt, 2"}, "1\n", 0},
 		{"halt_error", ``, []string{"-n", `"bye\n" | halt_error(7)`}, "", 7},
 		{"env", ``, []string{"-n", `$ENV | type`}, "\"object\"\n", 0},
+		{"seq output", ``, []string{"-nc", "--seq", `1, "a", [2]`}, "\x1e1\n\x1e\"a\"\n\x1e[2]\n", 0},
+		{"seq omits RS for raw strings", ``, []string{"-nr", "--seq", `"s", 1`}, "s\n\x1e1\n", 0},
+		{"seq input skips bad records", "\x1e1\n\x1e[3\n\x1e4\n", []string{"-c", "--seq", "."}, "\x1e1\n\x1e4\n", 0},
+		{"raw output0", ``, []string{"-n", "--raw-output0", `"a", 1, [2]`}, "a\x001\x00[\n  2\n]\x00", 0},
+		{"raw output0 rejects NUL", ``, []string{"-n", "--raw-output0", `"ok", "a\u0000b", "never"`}, "ok\x00", 5},
 		{"help", ``, []string{"--help"}, usage, 0},
 		{"unknown option", ``, []string{"--nope", "."}, "", 2},
 		{"missing filter", ``, []string{}, "", 2},
@@ -86,7 +91,11 @@ func TestCLI(t *testing.T) {
 }
 
 func TestCLIErrorMessages(t *testing.T) {
-	_, errOut, _ := runCLI(t, `"x"`, ".+1")
+	_, errOut, _ := runCLI(t, "\x1e[3\n\x1e1 2\n", "--seq", ".")
+	if strings.Count(errOut, "jqgo: ignoring parse error") != 2 {
+		t.Errorf("--seq warnings: %q", errOut)
+	}
+	_, errOut, _ = runCLI(t, `"x"`, ".+1")
 	if !strings.Contains(errOut, `jqgo: error (at <stdin>:1): string ("x") and number (1) cannot be added`) {
 		t.Errorf("stderr: %q", errOut)
 	}

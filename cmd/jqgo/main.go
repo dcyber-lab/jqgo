@@ -30,6 +30,8 @@ Options:
   -s, --slurp               read all inputs into one array (or one string with -R)
   -r, --raw-output          write strings without quotes
   -j, --join-output         like -r, without a newline after each output
+      --raw-output0         like -r, with a NUL after each output
+      --seq                 use RS-separated JSON text sequences (RFC 7464)
   -a, --ascii-output        escape non-ASCII characters
   -c, --compact-output      one line per output
       --tab                 indent with tabs
@@ -51,6 +53,7 @@ Options:
 
 type options struct {
 	nullInput, rawInput, slurp, rawOutput, joinOutput, ascii bool
+	rawOutput0, seq                                          bool
 	compact, tab, exitStatus                                 bool
 	color                                                    int // -1 off, 0 auto, 1 on
 	indent                                                   int
@@ -113,7 +116,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
-	in := newInputStream(opts, stdin)
+	in := newInputStream(opts, stdin, stderr)
 	exit := 0
 	var last any
 	produced := false
@@ -144,7 +147,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return true
 			}
 			produced, last = true, r
-			writeValue(out, r, opts, enc)
+			if err := writeValue(out, r, opts, enc); err != nil {
+				out.Flush()
+				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(), err)
+				exit = 5
+				return true
+			}
 		}
 		out.Flush()
 		return true
@@ -191,15 +199,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return exit
 }
 
-func writeValue(w *bufio.Writer, v any, opts options, enc jqgo.EncodeOptions) {
-	if s, ok := v.(string); ok && (opts.rawOutput || opts.joinOutput) {
+func writeValue(w *bufio.Writer, v any, opts options, enc jqgo.EncodeOptions) error {
+	if s, ok := v.(string); ok && (opts.rawOutput || opts.joinOutput || opts.rawOutput0) {
+		if opts.rawOutput0 && strings.IndexByte(s, 0) >= 0 {
+			return errors.New("Cannot dump a string containing NUL with --raw-output0 option")
+		}
 		w.WriteString(s)
 	} else {
+		if opts.seq {
+			w.WriteByte(0x1e) // RFC 7464 record separator; jq omits it for raw strings
+		}
 		w.Write(jqgo.MarshalWith(v, enc))
 	}
-	if !opts.joinOutput {
+	switch {
+	case opts.rawOutput0:
+		w.WriteByte(0)
+	case !opts.joinOutput:
 		w.WriteByte('\n')
 	}
+	return nil
 }
 
 func isTerminal(w io.Writer) bool {
@@ -271,6 +289,10 @@ func parseArgs(args []string) (options, string, error) {
 				opts.slurp = true
 			case "--raw-output":
 				opts.rawOutput = true
+			case "--raw-output0":
+				opts.rawOutput0 = true
+			case "--seq":
+				opts.seq = true
 			case "--join-output":
 				opts.joinOutput = true
 			case "--ascii-output":

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +19,8 @@ type inputStream struct {
 	files []string
 	stdin io.Reader
 	raw   bool
+	seq   bool      // RFC 7464: records separated by RS
+	warn  io.Writer // where skipped records are reported
 
 	next  int // index of the next file to open
 	name  string
@@ -27,8 +31,8 @@ type inputStream struct {
 	err   error
 }
 
-func newInputStream(opts options, stdin io.Reader) *inputStream {
-	s := &inputStream{files: opts.files, stdin: stdin, raw: opts.rawInput}
+func newInputStream(opts options, stdin io.Reader, warn io.Writer) *inputStream {
+	s := &inputStream{files: opts.files, stdin: stdin, raw: opts.rawInput, seq: opts.seq && !opts.rawInput, warn: warn}
 	if len(s.files) == 0 {
 		s.open("<stdin>", stdin)
 		s.next = -1
@@ -40,7 +44,7 @@ func (s *inputStream) open(name string, r io.Reader) {
 	s.name = name
 	s.count = 0
 	br := bufio.NewReaderSize(r, 64*1024)
-	if s.raw {
+	if s.raw || s.seq {
 		s.lines, s.dec = br, nil
 	} else {
 		s.dec, s.lines = jqgo.NewDecoder(br), nil
@@ -59,7 +63,7 @@ func (s *inputStream) advance() bool {
 		f, err := os.Open(name)
 		if err != nil {
 			s.err = fmt.Errorf("Could not open %s: %v", name, err)
-			fmt.Fprintf(os.Stderr, "jqgo: error: %s\n", s.err)
+			fmt.Fprintf(s.warn, "jqgo: error: %s\n", s.err)
 			continue
 		}
 		s.f = f
@@ -77,6 +81,17 @@ func (s *inputStream) Next() (any, error) {
 			if !s.advance() {
 				return nil, io.EOF
 			}
+		}
+		if s.seq {
+			v, ok, err := s.nextRecord()
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				s.lines = nil
+				continue
+			}
+			return v, nil
 		}
 		if s.raw {
 			line, err := s.lines.ReadString('\n')
@@ -144,5 +159,33 @@ func (s *inputStream) slurp() (any, error) {
 			return nil, err
 		}
 		all = append(all, v)
+	}
+}
+
+// nextRecord reads RS-separated records until one holds exactly one JSON
+// value. Records that do not are reported and skipped, as jq does. ok is
+// false at the end of the current source.
+func (s *inputStream) nextRecord() (v any, ok bool, err error) {
+	for {
+		rec, rerr := s.lines.ReadBytes(0x1e)
+		if rerr != nil && rerr != io.EOF {
+			return nil, false, rerr
+		}
+		rec = bytes.TrimSuffix(rec, []byte{0x1e})
+		if len(bytes.TrimSpace(rec)) > 0 {
+			dec := jqgo.NewDecoder(bytes.NewReader(rec))
+			val, derr := dec.Decode()
+			if derr == nil {
+				if _, extra := dec.Decode(); extra == io.EOF {
+					s.count++
+					return val, true, nil
+				}
+				derr = errors.New("more than one value in a record")
+			}
+			fmt.Fprintf(s.warn, "jqgo: ignoring parse error: %v\n", derr)
+		}
+		if rerr == io.EOF {
+			return nil, false, nil
+		}
 	}
 }
