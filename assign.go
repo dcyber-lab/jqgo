@@ -16,7 +16,7 @@ func (e *evaluator) assign(n *assignNode, env *envT, v any, own ownSet, out func
 	if err != nil {
 		return err
 	}
-	if own == nil {
+	if own == nil && !e.copyOnly {
 		own = ownSet{}
 	}
 	if n.op == "|=" {
@@ -35,7 +35,7 @@ func (e *evaluator) assign(n *assignNode, env *envT, v any, own ownSet, out func
 		clear(own)
 	}
 	for i, x := range rhs {
-		if i > 0 {
+		if i > 0 && own != nil {
 			own = ownSet{}
 		}
 		acc := v

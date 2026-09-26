@@ -74,6 +74,9 @@ type evaluator struct {
 	inputs Inputs
 	steps  int
 	depth  int
+
+	// copyOnly disables in-place updates (see ownSet); only tests set it.
+	copyOnly bool
 }
 
 // catchable reports whether try/catch, ? and // may intercept err.
@@ -669,7 +672,7 @@ func (e *evaluator) evalReduce(n *reduceNode, env *envT, v any, p *pathT, out em
 		owned := false
 		err := e.run(n.src, env, v, nil, func(x any, _ *pathT) error {
 			return e.bindPattern(&n.pat, env, x, func(env2 *envT) error {
-				if n.inPlace {
+				if n.inPlace && !e.copyOnly {
 					fast := e.reduceStep(n.update, env2, acc, owned)
 					if fast.err != nil {
 						return fast.err

@@ -20,4 +20,6 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - name: fuzz (short)
-        run: go test -run '^$' -fuzz FuzzQuery -fuzztime 30s .
+        run: |
+          go test -run '^$' -fuzz FuzzQuery -fuzztime 30s .
+          go test -run '^$' -fuzz FuzzInPlace -fuzztime 30s .
