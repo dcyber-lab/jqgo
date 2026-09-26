@@ -210,6 +210,34 @@ element at a time instead of the whole tree.
 at a time) against `Run` on every suite case; `TestStreamMemory` checks
 the heap stays small on a generated 200 MB input.
 
+## Parallel input
+
+`parallel.go`. `RunReaderParallel` runs three kinds of goroutines:
+
+- **The splitter** reads the input and cuts it into chunks of about 1 MB
+  that end with a newline at nesting depth 0 outside strings
+  (`splitScanner` tracks only brackets, strings and escapes). In valid
+  JSON such a newline is between tokens, so decoding chunks separately is
+  the same as decoding the whole. A short read (a pipe) ends a chunk early,
+  so trickling input is not held back.
+- **Workers** run `readLoop`, the same loop as `RunReader`, on a chunk
+  (streaming included), collecting results and errors.
+- **The caller's goroutine** yields each chunk's results in input order.
+  A chunk that stopped (syntax error, halt, cancellation) ends the run.
+
+Error equivalence comes from the cut rule: the first chunk with an error
+is the one where the sequential decoder would fail, at the same byte;
+each chunk decoder starts with the right line number, counted as the
+Decoder counts (raw newlines in strings included), and chunks end with
+their newline, so no token is cut short. A value longer than the limit, or
+a read error, turns the rest of the input into a `tail` chunk that the
+caller's goroutine processes sequentially.
+
+`TestParallelSuite` and `FuzzParallel` compare against `RunReader` with
+1-byte to 1 MB chunks, whole and short reads, on inputs laid out several
+ways (pretty-printed, BOM, broken lines, raw newlines in strings),
+comparing results, error messages and error lines.
+
 ## Safety when embedded
 
 - `tick` checks the context every 1024 units of work. It is called from
@@ -231,6 +259,7 @@ the heap stays small on a generated 200 MB input.
 | Same suites with non-canonical Go inputs | `TestJQSuiteLooseInput` |
 | In-place updates vs copying | `inplace_test.go` (`TestInPlaceEquivalence`, `FuzzInPlace`) |
 | Fast path vs general evaluator | `TestFastPathSuite`, `FuzzFastPath` |
+| Parallel vs sequential reading | `parallel_test.go` (`TestParallelSuite`, `FuzzParallel`) |
 | Streaming vs Run; memory on a 200 MB input | `stream_test.go` (`TestStreamSuite`, `FuzzStream`, `TestStreamMemory`) |
 | Decoder: whole vs byte-at-a-time, vs encoding/json | `decode_test.go`, `FuzzDecode` |
 | No panics or hangs on arbitrary programs | `FuzzQuery` |

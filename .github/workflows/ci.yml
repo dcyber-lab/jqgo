@@ -26,3 +26,4 @@ jobs:
           go test -run '^$' -fuzz FuzzFastPath -fuzztime 30s .
           go test -run '^$' -fuzz FuzzDecode -fuzztime 30s .
           go test -run '^$' -fuzz FuzzStream -fuzztime 30s .
+          go test -run '^$' -fuzz FuzzParallel -fuzztime 30s .

@@ -12,6 +12,8 @@ import (
 	"iter"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -41,6 +43,8 @@ Options:
   -M, --monochrome-output   do not colorize output
   -S, --sort-keys           sort object keys (always on in jqgo)
       --unbuffered          flush the output after each input
+      --parallel n          process inputs on n threads (default: all CPUs;
+                            1 to disable); output order is unchanged
   -e, --exit-status         set the exit status from the last output
   -f, --from-file file      read the filter from file
       --arg name value      set $name to the string value
@@ -59,6 +63,7 @@ type options struct {
 	compact, tab, exitStatus                                 bool
 	color                                                    int // -1 off, 0 auto, 1 on
 	indent                                                   int
+	parallel                                                 int // 0: GOMAXPROCS
 	filter                                                   string
 	haveFilter                                               bool
 	files                                                    []string
@@ -69,6 +74,12 @@ type options struct {
 }
 
 func main() {
+	// jqgo allocates a lot of short-lived values; collecting half as often
+	// is 10-20% faster for little extra memory (a large document's peak
+	// is dominated by the document itself).
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(200)
+	}
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
@@ -156,7 +167,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 					exit = 130
 					return false
 				}
-				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(), err)
+				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(err), err)
 				exit = 5
 				if streamed {
 					continue // RunReader goes on with the next value
@@ -166,7 +177,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			produced, last = true, r
 			if err := writeValue(out, encoder, r, opts); err != nil {
 				out.Flush()
-				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(), err)
+				fmt.Fprintf(stderr, "jqgo: error (at %s): %s\n", in.position(err), err)
 				exit = 5
 				if streamed {
 					continue
@@ -188,10 +199,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return consume(q.RunWithInputs(ctx, v, in, values...), nil)
 	}
 
-	// A query that only iterates over its input (.[], .items[] ...) is
-	// run while the input is parsed, so a huge array is never held whole.
-	streaming := q.Streamable() && !opts.nullInput && !opts.slurp && !opts.rawInput && !opts.seq
-	if streaming {
+	// Read JSON through RunReaderParallel when it can do better than the
+	// loop below: inputs processed on several threads, and queries that
+	// only iterate over their input (.[], .items[] ...) run while the input
+	// is parsed, so a huge array is never held whole. Not for queries that
+	// call input or inputs: those read across files, which only the loop
+	// below does.
+	workers := opts.parallel
+	if workers == 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	if !q.ParallelSafe() {
+		workers = 1
+	}
+	jsonInput := !opts.nullInput && !opts.slurp && !opts.rawInput && !opts.seq
+	if jsonInput && (q.Streamable() || workers > 1) {
 		in.sources(func(r io.Reader) bool {
 			rec := &errReader{r: r}
 			fatal := func(err error) bool {
@@ -202,7 +224,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			if f, ok := r.(interface{ Name() string }); ok {
 				src = namedReader{rec, f.Name()}
 			}
-			return consume(q.RunReader(ctx, src, values...), fatal)
+			return consume(q.RunReaderParallel(ctx, src, workers, values...), fatal)
 		})
 	} else if opts.nullInput {
 		process(nil)
@@ -357,6 +379,16 @@ func parseArgs(args []string) (options, string, error) {
 			case "--sort-keys":
 			case "--exit-status":
 				opts.exitStatus = true
+			case "--parallel":
+				if err := need(i, 1, a); err != nil {
+					return opts, "", err
+				}
+				n, err := strconv.Atoi(args[i+1])
+				if err != nil || n < 1 {
+					return opts, "", fmt.Errorf("--parallel takes a positive number")
+				}
+				opts.parallel = n
+				i++
 			case "--indent":
 				if err := need(i, 1, a); err != nil {
 					return opts, "", err

@@ -53,7 +53,7 @@ func readerRecord(q *Query, r io.Reader) runRecord {
 	var rec runRecord
 	for v, err := range q.RunReader(ctx, r) {
 		if err != nil {
-			rec.err += err.Error() + ";"
+			rec.addErr(err)
 			continue
 		}
 		rec.outputs = append(rec.outputs, toJSON(v))

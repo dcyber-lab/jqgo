@@ -39,6 +39,9 @@ type Query struct {
 	environ map[string]any
 	debug   io.Writer
 	stream  *streamNode // nil unless Streamable
+	// parallel: inputs can be processed concurrently (no input, inputs,
+	// debug or stderr, whose effects depend on order)
+	parallel bool
 }
 
 type config struct {
@@ -141,11 +144,12 @@ func Compile(src string, opts ...Option) (*Query, error) {
 	}
 	markSimple(root)
 	stream := analyzeStream(&root)
+	parallel := !calls(root, "input", "inputs", "debug", "stderr")
 	env := cfg.environ
 	if env == nil {
 		env = map[string]any{}
 	}
-	return &Query{src: src, root: root, vars: cfg.vars, custom: cfg.custom, environ: env, debug: cfg.debug, stream: stream}, nil
+	return &Query{src: src, root: root, vars: cfg.vars, custom: cfg.custom, environ: env, debug: cfg.debug, stream: stream, parallel: parallel}, nil
 }
 
 // MustCompile is like Compile but panics on error.
@@ -291,6 +295,17 @@ func (e *ValueError) Error() string {
 	}
 	return toJSON(e.Value) + " (not a string)"
 }
+
+// LineError is how RunReader and RunReaderParallel report a runtime
+// error: Line is the input line being read when it happened (1-based).
+// Its message is Err's, and errors.As and errors.Is see through it.
+type LineError struct {
+	Line int
+	Err  error
+}
+
+func (e *LineError) Error() string { return e.Err.Error() }
+func (e *LineError) Unwrap() error { return e.Err }
 
 // HaltError is raised by halt and halt_error. Code is the exit status the
 // jq CLI would use; Value is what halt_error was given.

@@ -2,6 +2,8 @@ package jqgo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,6 +36,15 @@ func deepCopy(v any) any {
 type runRecord struct {
 	outputs []string
 	err     string
+	lines   string // of LineErrors
+}
+
+func (r *runRecord) addErr(err error) {
+	r.err += err.Error() + ";"
+	var le *LineError
+	if errors.As(err, &le) {
+		r.lines += fmt.Sprint(le.Line, ";")
+	}
 }
 
 // record runs q and snapshots each result as it is yielded; mutated reports

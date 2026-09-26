@@ -54,6 +54,7 @@ Requires Go 1.23 or newer.
 | `q.RunWithInputs(ctx, input, inputs, vars...)` | Supply the stream behind `input` / `inputs`. |
 | `q.RunReader(ctx, r, vars...)` | Run on every JSON value read from `r`, like the CLI. Streams large values (see below). |
 | `q.Streamable()` | Whether `RunReader` can process a value without loading it whole. |
+| `q.RunReaderParallel(ctx, r, workers, vars...)` | `RunReader` on several goroutines, for NDJSON and other many-value inputs. Same results in the same order. |
 | `Eval(ctx, src, input)` | Compile and run in one call. |
 | `Marshal(v)` / `MarshalWith(v, EncodeOptions)` | Encode a value the way jq prints it. |
 | `NewEncoder(w, EncodeOptions)` | Same, streamed to an `io.Writer` without building the text in memory. |
@@ -123,15 +124,29 @@ for v, err := range q.RunReader(ctx, f) { ... }
 a variable, or call `input` do not, and get each value decoded whole, as
 with `Run`. The CLI does this automatically.
 
-On a 200 MB array of 1.5M records (`jqgo -c '.[] | select(...) | .name'`):
+For inputs made of many values (NDJSON, logs, the output of another
+jq), `RunReaderParallel` cuts the stream into chunks of about 1 MB at
+newlines between values and runs each chunk on its own goroutine. Results
+and errors (with their line numbers, see `LineError`) come out exactly as
+from `RunReader`. Queries calling `input`, `inputs`, `debug` or `stderr`
+run sequentially (`q.ParallelSafe()`), and so does a single value bigger
+than 64 MB (8 MB for a streamable query), along with the rest of the input.
+The CLI uses all CPUs unless given `--parallel 1`.
 
-| | time | peak memory |
-| --- | --- | --- |
-| jq 1.7 | 13.2 s | 3.2 GB |
-| jqgo, whole document | 4.9 s | 2.2 GB |
-| jqgo, streamed | 4.6 s | 13 MB |
+Measured with the CLI on a 4-core machine, jq 1.7 for reference:
 
-`first(.[])` on the same file takes 0.8 s: the rest is only scanned.
+| input, query | jq | jqgo, 1 thread | jqgo |
+| --- | --- | --- | --- |
+| 200 MB NDJSON, `.name` | 4.8 s | 3.6 s | 1.5 s, 50 MB |
+| 200 MB NDJSON, `select(.age > 50) \| {id, city: .addr.city}` | 6.0 s | 4.8 s | 2.0 s, 89 MB |
+| 200 MB NDJSON, `.` | 9.1 s | 5.5 s | 2.3 s, 257 MB |
+| 200 MB array, `.[] \| select(...) \| .name` | 13.2 s, 3.2 GB | 3.8 s, 13 MB | 3.9 s, 49 MB |
+| 200 MB array, `first(.[])` | 8.8 s, 3.2 GB | 0.8 s, 13 MB | 1.0 s, 34 MB |
+
+jq stays at 13 MB on NDJSON. jqgo's single-threaded runs use the same, and
+before streaming the array case took 2.2 GB. The parallel speedup is
+bounded by the part that stays sequential: splitting the input, and in
+the CLI, encoding the output.
 
 ## CLI
 
@@ -142,8 +157,9 @@ jqgo -r '.[] | [.id, .name] | @tsv' users.json
 ```
 
 Supported flags: `-n -r -j -a -c -s -e -R -C -M -S -f --tab --indent n
---raw-output0 --seq --arg --argjson --slurpfile --rawfile --args
---jsonargs`, plus the `JQ_COLORS` and `NO_COLOR` environment variables.
+--raw-output0 --seq --unbuffered --arg --argjson --slurpfile --rawfile
+--args --jsonargs`, plus the `JQ_COLORS` and `NO_COLOR` environment
+variables. `--parallel n` is jqgo's own (see Large inputs).
 Exit codes follow jq: 2 for usage or input errors, 3 for compile errors, 5
 for runtime errors, and `-e` semantics. `--stream`, `--stream-errors` and
 `-L` (modules) are not implemented.

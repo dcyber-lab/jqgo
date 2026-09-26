@@ -89,6 +89,11 @@ func TestCLI(t *testing.T) {
 		{"streamed input_filename", ``, []string{"-c", ".items[] | [., input_filename]", items1, items2}, "[1,\"" + items1 + "\"]\n[2,\"" + items1 + "\"]\n[3,\"" + items2 + "\"]\n", 0},
 		{"streamed stdin filename", `[1]`, []string{".[] | input_filename"}, "null\n", 0},
 		{"streamed missing file", ``, []string{".items[]", missing, items2}, "3\n", 2},
+		{"parallel", "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n", []string{"-c", "--parallel", "3", ".a"}, "1\n2\n3\n", 0},
+		{"parallel errors in order", "1\n\"x\"\n3\n", []string{"--parallel", "2", ".+1"}, "2\n4\n", 5},
+		{"parallel off", "1 2", []string{"--parallel", "1", "."}, "1\n2\n", 0},
+		{"parallel bad count", "", []string{"--parallel", "0", "."}, "", 2},
+		{"input across files", ``, []string{"-c", "[., input]", f1, f2}, "[{\"a\":1},{\"a\":2}]\n", 5},
 		{"help", ``, []string{"--help"}, usage, 0},
 		{"unknown option", ``, []string{"--nope", "."}, "", 2},
 		{"missing filter", ``, []string{}, "", 2},
@@ -110,6 +115,10 @@ func TestCLIErrorMessages(t *testing.T) {
 	}
 	_, errOut, _ = runCLI(t, `"x"`, ".+1")
 	if !strings.Contains(errOut, `jqgo: error (at <stdin>:1): string ("x") and number (1) cannot be added`) {
+		t.Errorf("stderr: %q", errOut)
+	}
+	_, errOut, _ = runCLI(t, "{\"a\":1}\n{\"a\":\"x\"}\n", "--parallel", "2", ".a+1")
+	if !strings.Contains(errOut, `jqgo: error (at <stdin>:2): string ("x") and number (1) cannot be added`) {
 		t.Errorf("stderr: %q", errOut)
 	}
 	_, errOut, _ = runCLI(t, ``, "-n", `"bye\n" | halt_error(7)`)

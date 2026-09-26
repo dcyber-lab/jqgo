@@ -148,12 +148,19 @@ func (s *inputStream) Filename() any {
 	return s.name
 }
 
-func (s *inputStream) position() string {
+// position says where in the input err happened, like jq's
+// "(at <stdin>:3)": the line, or when not known, the number of values read.
+func (s *inputStream) position(errs ...error) string {
 	name := s.name
 	if name == "" {
 		name = "<stdin>"
 	}
-	return fmt.Sprintf("%s:%d", name, s.count)
+	n := s.count
+	var le *jqgo.LineError
+	if len(errs) > 0 && errors.As(errs[0], &le) {
+		n = le.Line
+	}
+	return fmt.Sprintf("%s:%d", name, n)
 }
 
 // slurp reads everything: an array of values, or one string with -R.

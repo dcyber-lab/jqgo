@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"slices"
 )
 
 // Streaming large inputs.
@@ -33,7 +34,7 @@ func (*streamNode) isNode() {}
 // analyzeStream installs a streamNode in root if the query qualifies and
 // returns it.
 func analyzeStream(root *node) *streamNode {
-	if usesInputBuiltins(*root) {
+	if calls(*root, "input", "inputs") {
 		return nil
 	}
 	return streamPoint(*root, func(n node) { *root = n })
@@ -166,12 +167,13 @@ func ignoresInput(n node) bool {
 	return false
 }
 
-// usesInputBuiltins reports calls to input or inputs anywhere in n: they
-// read the next top-level value, which the stream is in the middle of.
-func usesInputBuiltins(n node) bool {
+// calls reports calls to any of the named functions (whatever their
+// arity) anywhere in n. input and inputs read the next top-level value,
+// which a stream is in the middle of.
+func calls(n node, names ...string) bool {
 	found := false
 	walk(n, func(x node) {
-		if c, ok := x.(*callNode); ok && !c.lexical && (c.name == "input" || c.name == "inputs") && len(c.args) == 0 {
+		if c, ok := x.(*callNode); ok && !c.lexical && slices.Contains(names, c.name) {
 			found = true
 		}
 	})
@@ -460,55 +462,72 @@ func (q *Query) Streamable() bool { return q.stream != nil }
 // queries get each value fully decoded, as with Run; input and inputs
 // then read the following values.
 //
-// A runtime error is yielded and processing continues with the next
-// value, like jq. A syntax or read error is yielded and ends the
+// A runtime error is yielded as a *LineError and processing continues
+// with the next value, like jq. A syntax or read error is yielded and ends the
 // iteration. If r has a Name method, as *os.File does, input_filename
 // returns it. When streaming, results from a value can come before a
 // syntax error later in that same value, and of duplicate keys on the
 // streamed path the first one is used (jq's own parser keeps the last).
 func (q *Query) RunReader(ctx context.Context, r io.Reader, vars ...any) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
-		d := NewDecoder(r)
-		for {
-			if q.stream != nil {
-				if _, ok := d.skipSpaceAfterBOM(); !ok {
-					if d.rerr != nil {
-						yield(nil, d.rerr)
-					}
-					return
+		q.readLoop(ctx, NewDecoder(r), r, vars, yield)
+	}
+}
+
+// readLoop runs q on each value d reads; r is only asked for its name. It
+// reports whether it reached the end of the input, as opposed to stopping
+// because yield did, or on halt, a syntax or read error, or cancellation.
+func (q *Query) readLoop(ctx context.Context, d *Decoder, r io.Reader, vars []any, yield func(any, error) bool) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	inputs := decoderInputs{d, r}
+	emit := func(v any, err error) bool {
+		if err != nil && !isHalt(err) {
+			err = &LineError{Line: d.line, Err: err}
+		}
+		return yield(v, err)
+	}
+	for {
+		if q.stream != nil {
+			if _, ok := d.skipSpaceAfterBOM(); !ok {
+				if d.rerr != nil {
+					yield(nil, d.rerr)
+					return false
 				}
-				src := &streamSource{d: d}
-				for v, err := range q.exec(ctx, nil, decoderInputs{d, r}, evalOptions{stream: src}, vars) {
-					if src.readErr != nil {
-						break // yielded below
-					}
-					if !yield(v, err) || isHalt(err) {
-						src.abandoned = true
-						return
-					}
+				return true
+			}
+			src := &streamSource{d: d}
+			for v, err := range q.exec(ctx, nil, inputs, evalOptions{stream: src}, vars) {
+				if src.readErr != nil {
+					break // yielded below
 				}
-				if err := src.finish(); err != nil {
-					yield(nil, err)
-					return
-				}
-			} else {
-				v, err := d.Decode()
-				if err == io.EOF {
-					return
-				}
-				if err != nil {
-					yield(nil, err)
-					return
-				}
-				for v, err := range q.exec(ctx, v, decoderInputs{d, r}, evalOptions{}, vars) {
-					if !yield(v, err) || isHalt(err) {
-						return
-					}
+				if !emit(v, err) || isHalt(err) {
+					src.abandoned = true
+					return false
 				}
 			}
-			if isCancel(ctx.Err()) {
-				return
+			if err := src.finish(); err != nil {
+				yield(nil, err)
+				return false
 			}
+		} else {
+			v, err := d.Decode()
+			if err == io.EOF {
+				return true
+			}
+			if err != nil {
+				yield(nil, err)
+				return false
+			}
+			for v, err := range q.exec(ctx, v, inputs, evalOptions{}, vars) {
+				if !emit(v, err) || isHalt(err) {
+					return false
+				}
+			}
+		}
+		if isCancel(ctx.Err()) {
+			return false
 		}
 	}
 }
