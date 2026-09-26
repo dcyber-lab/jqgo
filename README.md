@@ -83,6 +83,13 @@ Things to know when embedding:
 
 - Results can share memory with the input and with each other. Treat them as
   read-only. jqgo never mutates the input you pass in.
+- Input is converted on demand, not up front. Canonical input (what
+  `json.Unmarshal` gives) costs nothing extra. Other Go types (structs,
+  `int64`, `json.Number`, `[]string`...) are converted when a query reads
+  them. Parts of the input a query passes through untouched come back
+  as you gave them, so a result can contain your own `int64` or struct.
+  Call `Normalize` first if you want plain JSON types all the way down, or
+  if you query the same non-canonical value many times.
 - Numbers are `int` when integral and in range, `float64` otherwise. For
   example, `7 / 2` is `3.5` but `6 / 3` is `2`.
 - Object keys are always emitted sorted. Go maps have no order, so
@@ -107,9 +114,30 @@ Supported flags: `-n -r -j -a -c -s -e -R -C -M -S -f --tab --indent n
 2 for usage or input errors, 3 for compile errors, 5 for runtime errors, and
 `-e` semantics. `--stream`, `--seq` and `-L`/modules are not implemented.
 
-On a 200k-object, 24 MB file, the jqgo CLI is 1.2–2× faster than jq 1.7 on
-typical filters (`select`, `group_by`, `reduce`, `|=`, `paths`), with
-identical output.
+
+
+## Performance
+
+Benchmarks run over 10,000 generated records. `bench/` runs the same
+queries through jqgo and [gojq](https://github.com/itchyny/gojq) after
+checking that both give the same results. On the machine where
+`bench/baseline.txt` was recorded, jqgo was faster on all 18 benchmarks,
+2.5× faster in geometric mean:
+
+| query | jqgo | gojq |
+| --- | --- | --- |
+| `[.[] \| .name]` | 0.89 ms | 1.62 ms |
+| `select(.age > 50 and .active)` | 2.84 ms | 4.06 ms |
+| `map({id, city: .addr.city, ...})` | 4.90 ms | 6.65 ms |
+| `select(.name \| test("7$"))` | 3.37 ms | 11.7 ms |
+| `reduce .[] as $x ({}; .[$x.addr.city] += 1)` | 9.2 ms | 63.7 ms |
+| `INDEX(.id)` | 16 ms | 2.7 s |
+| one small document | 1.4 µs | 2.0 µs |
+
+Updates such as `reduce`, `|=` and `INDEX` stay linear because jqgo
+modifies containers it allocated itself in place (see
+[DESIGN.md](DESIGN.md)). Rerun `bench/` on your own hardware before
+relying on these numbers.
 
 ## Differences from jq 1.7.1
 
@@ -128,10 +156,14 @@ identical output.
 
 ## Development
 
+See [DESIGN.md](DESIGN.md) for how the implementation fits together.
+
+
 ```sh
 go test ./...                               # includes jq's own test suites
 go test -race ./...
-go test -run '^$' -fuzz FuzzQuery -fuzztime 60s .
+go test -run '^$' -fuzz FuzzQuery -fuzztime 60s .   # also FuzzInPlace, FuzzFastPath, FuzzDecode
+go test -run '^$' -bench . -count 6 > new.txt && benchstat old.txt new.txt
 ```
 
 `testdata/extra.test` holds extra edge cases whose expected outputs were

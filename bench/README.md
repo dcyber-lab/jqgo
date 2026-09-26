@@ -10,4 +10,5 @@ benchstat -col /impl out.txt
 ```
 
 `baseline.txt` is the raw output of the run the numbers in the main
-README come from. Rerun on your own hardware before drawing conclusions.
+README come from (jqgo was faster on all 18 benchmarks, geomean 2.5x).
+Rerun on your own hardware before drawing conclusions.
